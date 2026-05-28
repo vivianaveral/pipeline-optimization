@@ -3,6 +3,9 @@ import { POST_BILLING_STAGES, STAGE_IDS } from "@/config/initiatives";
 
 const HUBSPOT_BASE = "https://api.hubspot.com/crm/v3/objects/deals/search";
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const PAGE_DELAY_MS = 250; // stay well within HubSpot's secondly rate limit
+
 interface HubSpotDeal {
   id: string;
   properties: Record<string, string | null>;
@@ -80,6 +83,7 @@ async function fetchAllDeals(token: string, query: SearchQuery): Promise<HubSpot
     const data = await res.json();
     deals.push(...(data.results ?? []));
     after = data.paging?.next?.after;
+    if (after) await sleep(PAGE_DELAY_MS);
   } while (after);
 
   return deals;
@@ -244,32 +248,32 @@ export async function fetchInitiativeData(
     ...exclusionFilter,
   ];
 
-  const [oldDeals, newDeals] = await Promise.all([
-    fetchAllDeals(token, {
-      filterGroups: [
-        {
-          filters: [
-            { propertyName: entryProperty, operator: "BETWEEN", value: oldFrom, highValue: oldTo },
-            ...baseFilters,
-          ],
-        },
-      ],
-      properties: DEAL_PROPERTIES,
-      limit: 200,
-    }),
-    fetchAllDeals(token, {
-      filterGroups: [
-        {
-          filters: [
-            { propertyName: entryProperty, operator: "GTE", value: newFrom },
-            ...baseFilters,
-          ],
-        },
-      ],
-      properties: DEAL_PROPERTIES,
-      limit: 200,
-    }),
-  ]);
+  // Sequential (not concurrent) to avoid bursting the secondly rate limit
+  const oldDeals = await fetchAllDeals(token, {
+    filterGroups: [
+      {
+        filters: [
+          { propertyName: entryProperty, operator: "BETWEEN", value: oldFrom, highValue: oldTo },
+          ...baseFilters,
+        ],
+      },
+    ],
+    properties: DEAL_PROPERTIES,
+    limit: 200,
+  });
+  await sleep(PAGE_DELAY_MS);
+  const newDeals = await fetchAllDeals(token, {
+    filterGroups: [
+      {
+        filters: [
+          { propertyName: entryProperty, operator: "GTE", value: newFrom },
+          ...baseFilters,
+        ],
+      },
+    ],
+    properties: DEAL_PROPERTIES,
+    limit: 200,
+  });
 
   return {
     old: aggregateDeals(oldDeals, entryProperty, maturityDays, oldFrom),
