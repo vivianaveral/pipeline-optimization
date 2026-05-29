@@ -21,7 +21,7 @@ export default function HomePage() {
   const [cacheData, setCacheData] = useState<CacheData | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<"ok" | "loading" | "error" | "empty">("empty");
-  const [statusText, setStatusText] = useState("No data loaded. Click Refresh to pull from HubSpot.");
+  const [statusText, setStatusText] = useState("No data loaded. Click Refresh to pull from HubSpot (fetches one initiative at a time).");
 
   const loadCache = useCallback(async () => {
     try {
@@ -48,22 +48,45 @@ export default function HomePage() {
 
   const handleRefresh = async () => {
     setLoading(true);
-    setStatus("loading");
-    setStatusText("Refreshing from HubSpot... (~10–40 API calls, ~5–15 seconds)");
-    try {
-      const res = await fetch("/api/refresh", { method: "POST" });
-      const json = await res.json();
-      if (res.ok) {
-        await loadCache();
-      } else {
-        setStatus("error");
-        setStatusText(`Refresh failed: ${json.error}`);
+    const steps = [...INITIATIVES.map((i) => i.id), "holistic"] as const;
+    const errors: string[] = [];
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const label = step === "holistic" ? "Holistic funnel" : `Initiative ${step} / ${INITIATIVES.find((x) => x.id === step)?.name}`;
+      setStatus("loading");
+      setStatusText(`Refreshing ${i + 1}/${steps.length}: ${label}…`);
+
+      try {
+        const res = await fetch(`/api/refresh?step=${step}`, { method: "POST" });
+        const json = await res.json();
+        if (!res.ok) {
+          const msg = json?.error ?? `HTTP ${res.status}`;
+          console.error(`[refresh] Step ${step} failed:`, msg);
+          errors.push(`${label}: ${msg}`);
+          // Continue to next step — don't abort the whole refresh
+        } else {
+          // Reload cache after each successful step so data appears progressively
+          await loadCache();
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "network error";
+        console.error(`[refresh] Step ${step} threw:`, e);
+        errors.push(`${label}: ${msg}`);
       }
-    } catch (e) {
+    }
+
+    setLoading(false);
+    if (errors.length === 0) {
+      await loadCache();
+    } else if (errors.length === steps.length) {
       setStatus("error");
-      setStatusText("Refresh failed: network error.");
-    } finally {
-      setLoading(false);
+      setStatusText(`All steps failed. First error: ${errors[0]}`);
+    } else {
+      // Partial success — show which steps failed
+      setStatus("error");
+      setStatusText(`Refresh complete with ${errors.length} error(s): ${errors.join(" · ")}`);
+      await loadCache();
     }
   };
 

@@ -1,38 +1,77 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { INITIATIVES } from "@/config/initiatives";
 import { fetchInitiativeData, fetchHolisticFunnel } from "@/lib/hubspot";
-import { writeCache, type CacheData } from "@/lib/cache";
+import { readCache, writeCache, type CacheData } from "@/lib/cache";
 
-export async function POST() {
+// Extend Railway/Next.js timeout to 60s per step
+export const maxDuration = 60;
+
+export async function POST(req: NextRequest) {
   const token = process.env.HUBSPOT_ACCESS_TOKEN;
   if (!token) {
-    return NextResponse.json({ error: "HUBSPOT_ACCESS_TOKEN not set" }, { status: 500 });
+    return NextResponse.json({ error: "HUBSPOT_ACCESS_TOKEN is not set in environment variables" }, { status: 500 });
   }
 
+  const { searchParams } = new URL(req.url);
+  const step = searchParams.get("step"); // initiative ID ("01"–"05") or "holistic", or null = full refresh
+
   try {
-    const initiativeResults: CacheData["initiatives"] = {};
+    if (step === "holistic") {
+      return await handleHolistic(token);
+    }
 
-    for (const initiative of INITIATIVES) {
-      if (initiative.notYetLaunched) {
-        initiativeResults[initiative.id] = {
-          old: buildBaselineMetrics(initiative),
-          new: buildEmptyMetrics(initiative.newMotion.maturityDays ?? 42),
-        };
-        continue;
-      }
+    if (step) {
+      return await handleInitiative(token, step);
+    }
 
-      const entryProperty = initiative.entryProperty;
-      if (!entryProperty) continue;
+    // No step param — run everything sequentially (dev/testing convenience; Railway uses per-step calls)
+    return await handleAll(token);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[refresh] Unhandled error (step=${step ?? "all"}):`, err);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
 
-      const oldTo = initiative.oldMotion.dateTo && initiative.oldMotion.dateTo !== "TBD"
+export async function GET() {
+  return NextResponse.json({ error: "Use POST to refresh" }, { status: 405 });
+}
+
+// ─── Per-step handlers ───────────────────────────────────────────────────────
+
+async function handleInitiative(token: string, id: string) {
+  const initiative = INITIATIVES.find((i) => i.id === id);
+  if (!initiative) {
+    return NextResponse.json({ error: `Unknown initiative id: ${id}` }, { status: 400 });
+  }
+
+  let result: CacheData["initiatives"][string];
+
+  if (initiative.notYetLaunched) {
+    result = {
+      old: buildBaselineMetrics(initiative),
+      new: buildEmptyMetrics(initiative.newMotion.maturityDays ?? 42),
+    };
+  } else {
+    const entryProperty = initiative.entryProperty;
+    if (!entryProperty) {
+      return NextResponse.json({ error: `Initiative ${id} has no entryProperty configured` }, { status: 400 });
+    }
+
+    const oldTo =
+      initiative.oldMotion.dateTo && initiative.oldMotion.dateTo !== "TBD"
         ? initiative.oldMotion.dateTo
         : new Date().toISOString().split("T")[0];
 
-      const newFrom = initiative.newMotion.dateFrom !== "TBD"
+    const newFrom =
+      initiative.newMotion.dateFrom !== "TBD"
         ? initiative.newMotion.dateFrom
         : new Date().toISOString().split("T")[0];
 
-      const data = await fetchInitiativeData(
+    console.log(`[refresh] Fetching initiative ${id}: old ${initiative.oldMotion.dateFrom}→${oldTo}, new ${newFrom}+`);
+
+    try {
+      result = await fetchInitiativeData(
         token,
         initiative.id,
         entryProperty,
@@ -41,29 +80,111 @@ export async function POST() {
         newFrom,
         initiative.newMotion.maturityDays ?? 42
       );
-
-      initiativeResults[initiative.id] = data;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[refresh] HubSpot error on initiative ${id}:`, err);
+      return NextResponse.json({ error: `Initiative ${id} failed: ${message}` }, { status: 502 });
     }
-
-    const holistic = await fetchHolisticFunnel(token, 6);
-
-    const cache: CacheData = {
-      refreshed_at: new Date().toISOString(),
-      initiatives: initiativeResults,
-      holistic,
-    };
-
-    writeCache(cache);
-
-    return NextResponse.json({ ok: true, refreshed_at: cache.refreshed_at });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
   }
+
+  // Merge into existing cache (don't wipe other initiatives)
+  const existing = readCache() ?? emptyCache();
+  existing.initiatives[id] = result;
+  existing.refreshed_at = new Date().toISOString();
+  writeCache(existing);
+
+  console.log(`[refresh] Initiative ${id} done — enrolled old=${result.old.enrolled} new=${result.new.enrolled}`);
+  return NextResponse.json({
+    ok: true,
+    step: id,
+    enrolled_old: result.old.enrolled,
+    enrolled_new: result.new.enrolled,
+  });
 }
 
-export async function GET() {
-  return NextResponse.json({ error: "Use POST to refresh" }, { status: 405 });
+async function handleHolistic(token: string) {
+  console.log("[refresh] Fetching holistic funnel (6 months)...");
+
+  let holistic: CacheData["holistic"];
+  try {
+    holistic = await fetchHolisticFunnel(token, 6);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[refresh] HubSpot error on holistic funnel:", err);
+    return NextResponse.json({ error: `Holistic funnel failed: ${message}` }, { status: 502 });
+  }
+
+  const existing = readCache() ?? emptyCache();
+  existing.holistic = holistic;
+  existing.refreshed_at = new Date().toISOString();
+  writeCache(existing);
+
+  const monthCount = Object.keys(holistic).length;
+  console.log(`[refresh] Holistic done — ${monthCount} months`);
+  return NextResponse.json({ ok: true, step: "holistic", months: monthCount });
+}
+
+async function handleAll(token: string) {
+  console.log("[refresh] Full refresh (all initiatives + holistic)...");
+  const initiativeResults: CacheData["initiatives"] = {};
+
+  for (const initiative of INITIATIVES) {
+    if (initiative.notYetLaunched) {
+      initiativeResults[initiative.id] = {
+        old: buildBaselineMetrics(initiative),
+        new: buildEmptyMetrics(initiative.newMotion.maturityDays ?? 42),
+      };
+      continue;
+    }
+
+    const entryProperty = initiative.entryProperty;
+    if (!entryProperty) continue;
+
+    const oldTo =
+      initiative.oldMotion.dateTo && initiative.oldMotion.dateTo !== "TBD"
+        ? initiative.oldMotion.dateTo
+        : new Date().toISOString().split("T")[0];
+
+    const newFrom =
+      initiative.newMotion.dateFrom !== "TBD"
+        ? initiative.newMotion.dateFrom
+        : new Date().toISOString().split("T")[0];
+
+    console.log(`[refresh] Fetching initiative ${initiative.id}...`);
+    try {
+      initiativeResults[initiative.id] = await fetchInitiativeData(
+        token,
+        initiative.id,
+        entryProperty,
+        initiative.oldMotion.dateFrom,
+        oldTo,
+        newFrom,
+        initiative.newMotion.maturityDays ?? 42
+      );
+    } catch (err) {
+      console.error(`[refresh] Initiative ${initiative.id} failed:`, err);
+      throw err; // bubble up to outer handler
+    }
+  }
+
+  console.log("[refresh] Fetching holistic funnel...");
+  const holistic = await fetchHolisticFunnel(token, 6);
+
+  const cache: CacheData = {
+    refreshed_at: new Date().toISOString(),
+    initiatives: initiativeResults,
+    holistic,
+  };
+  writeCache(cache);
+
+  console.log("[refresh] Full refresh complete");
+  return NextResponse.json({ ok: true, refreshed_at: cache.refreshed_at });
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function emptyCache(): CacheData {
+  return { refreshed_at: new Date().toISOString(), initiatives: {}, holistic: {} };
 }
 
 function buildEmptyMetrics(maturityDays: number) {
