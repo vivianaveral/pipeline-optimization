@@ -16,9 +16,12 @@ interface Props {
   // Effective dates after period filter intersection — used for accurate maturity banner
   effectiveNewFrom: string;
   effectiveNewTo?: string;
+  // Calendar months the active period spans — passed to HolisticFunnel to scope its display.
+  // null = "All data" (show all available months).
+  periodMonths: string[] | null;
 }
 
-export default function InitiativeView({ initiative, old, newData, holistic, effectiveNewFrom, effectiveNewTo }: Props) {
+export default function InitiativeView({ initiative, old, newData, holistic, effectiveNewFrom, effectiveNewTo, periodMonths }: Props) {
   const notLaunched = initiative.notYetLaunched;
 
   // Cohort age computed from the effective window start, not the raw new motion data.
@@ -101,7 +104,7 @@ export default function InitiativeView({ initiative, old, newData, holistic, eff
       {/* ── Section 10 order: Full Sales Pipeline first, then Cohort Funnel ── */}
 
       {/* Full Sales Pipeline — Holistic Funnel */}
-      {Object.keys(holistic).length > 0 && <HolisticFunnel data={holistic} />}
+      {Object.keys(holistic).length > 0 && <HolisticFunnel data={holistic} allowedMonths={periodMonths} />}
 
       {/* Cohort Funnel (old vs new side-by-side) */}
       {!notLaunched && <CohortFunnel old={old} newData={newData} />}

@@ -63,6 +63,22 @@ function getPeriodDates(period: Period, customFrom: string, customTo: string): P
   return null;
 }
 
+// Calendar months that fall within a period (e.g. "this_q" → ["2026-04","2026-05","2026-06"])
+// Used to scope the holistic funnel month dropdown to match the active period.
+// Returns null for "all data" (no restriction).
+function getMonthsInPeriod(period: Period, customFrom: string, customTo: string): string[] | null {
+  const dates = getPeriodDates(period, customFrom, customTo);
+  if (!dates) return null;
+  const months: string[] = [];
+  const cur = new Date(new Date(dates.from).getFullYear(), new Date(dates.from).getMonth(), 1);
+  const end = new Date(dates.to);
+  while (cur <= end) {
+    months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`);
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return months;
+}
+
 // Intersect period window with initiative config dates to get what we actually query
 function getEffectiveDates(ini: Initiative, period: PeriodDates | null): EffectiveDates | null {
   const today = toDateStr(new Date());
@@ -216,6 +232,7 @@ export default function HomePage() {
 
   const periodDates    = getPeriodDates(period, customFrom, customTo);
   const effectiveDates = getEffectiveDates(initiative, periodDates);
+  const periodMonths   = getMonthsInPeriod(period, customFrom, customTo); // null = show all
 
   const hasData      = !!initiativeData;
   const refreshedAt  = lastRefreshed
@@ -318,6 +335,7 @@ export default function HomePage() {
         holistic={holistic}
         effectiveNewFrom={effectiveDates?.newFrom ?? initiative.newMotion.dateFrom}
         effectiveNewTo={effectiveDates?.newTo}
+        periodMonths={periodMonths}
       />
     </div>
   );
