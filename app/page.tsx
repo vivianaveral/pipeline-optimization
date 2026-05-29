@@ -21,7 +21,7 @@ export default function HomePage() {
   const [cacheData, setCacheData] = useState<CacheData | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<"ok" | "loading" | "error" | "empty">("empty");
-  const [statusText, setStatusText] = useState("No data loaded. Click Refresh to pull from HubSpot (fetches one initiative at a time).");
+  const [statusText, setStatusText] = useState("No data loaded. Click Refresh to load the current tab from HubSpot.");
 
   const loadCache = useCallback(async () => {
     try {
@@ -47,51 +47,34 @@ export default function HomePage() {
   }, [loadCache]);
 
   const handleRefresh = async () => {
+    const initiative = INITIATIVES.find((i) => i.id === activeTab)!;
     setLoading(true);
-    const steps = [...INITIATIVES.map((i) => i.id), "holistic"] as const;
-    const errors: string[] = [];
+    setStatus("loading");
+    setStatusText(`Refreshing Initiative ${activeTab}: ${initiative.name}…`);
 
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      const label = step === "holistic" ? "Holistic funnel" : `Initiative ${step} / ${INITIATIVES.find((x) => x.id === step)?.name}`;
-      setStatus("loading");
-      setStatusText(`Refreshing ${i + 1}/${steps.length}: ${label}…`);
-
-      try {
-        const res = await fetch(`/api/refresh?step=${step}`, { method: "POST" });
-        const json = await res.json();
-        if (!res.ok) {
-          const msg = json?.error ?? `HTTP ${res.status}`;
-          console.error(`[refresh] Step ${step} failed:`, msg);
-          errors.push(`${label}: ${msg}`);
-          // Continue to next step — don't abort the whole refresh
-        } else {
-          // Reload cache after each successful step so data appears progressively
-          await loadCache();
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "network error";
-        console.error(`[refresh] Step ${step} threw:`, e);
-        errors.push(`${label}: ${msg}`);
+    try {
+      const res = await fetch(`/api/refresh?step=${activeTab}`, { method: "POST" });
+      const json = await res.json();
+      if (res.ok) {
+        await loadCache();
+      } else {
+        const msg = json?.error ?? `HTTP ${res.status}`;
+        console.error(`[refresh] Initiative ${activeTab} failed:`, msg);
+        setStatus("error");
+        setStatusText(`Refresh failed: ${msg}`);
       }
-    }
-
-    setLoading(false);
-    if (errors.length === 0) {
-      await loadCache();
-    } else if (errors.length === steps.length) {
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "network error";
+      console.error(`[refresh] threw:`, e);
       setStatus("error");
-      setStatusText(`All steps failed. First error: ${errors[0]}`);
-    } else {
-      // Partial success — show which steps failed
-      setStatus("error");
-      setStatusText(`Refresh complete with ${errors.length} error(s): ${errors.join(" · ")}`);
-      await loadCache();
+      setStatusText(`Refresh failed: ${msg}`);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const initiative = INITIATIVES.find((i) => i.id === activeTab)!;
   const initiativeData = cacheData?.initiatives?.[activeTab];
+  const initiative = INITIATIVES.find((i) => i.id === activeTab)!;
   const old = initiativeData?.old ?? emptyMetrics(initiative.newMotion.maturityDays);
   const newData = initiativeData?.new ?? emptyMetrics(initiative.newMotion.maturityDays);
   const holistic: Record<string, HolisticMonthData> = cacheData?.holistic ?? {};
@@ -106,7 +89,7 @@ export default function HomePage() {
             <h1>Sales Initiative KPI Tracker</h1>
           </div>
           <button className="btn primary" onClick={handleRefresh} disabled={loading}>
-            {loading ? "⟳ Refreshing..." : "↻ Refresh from HubSpot"}
+            {loading ? "⟳ Refreshing…" : `↻ Refresh Initiative ${activeTab}`}
           </button>
         </div>
 
