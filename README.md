@@ -21,6 +21,15 @@ Tracks the performance of 5 BruntWork sales funnel initiatives, comparing old pr
 
 ---
 
+## Authentication
+
+The entire dashboard is password-protected. Any unauthenticated visitor is redirected to a login screen. On correct password, a secure HTTP-only cookie is set and persists for 7 days.
+
+- Password is stored as `DASHBOARD_PASSWORD` in Railway environment variables — never hardcoded.
+- No username field — single shared password for the internal team.
+
+---
+
 ## Running locally
 
 ```bash
@@ -29,7 +38,9 @@ npm install
 
 # 2. Set up environment
 cp .env.example .env.local
-# Add your HUBSPOT_ACCESS_TOKEN to .env.local
+# Edit .env.local and set:
+#   HUBSPOT_ACCESS_TOKEN=<your token>
+#   DASHBOARD_PASSWORD=<any password you want locally>
 
 # 3. Run dev server
 npm run dev
@@ -42,7 +53,9 @@ npm run dev
 
 1. Push to GitHub: `git push origin main`
 2. In Railway: New Project → Deploy from GitHub → select `pipeline-optimization`
-3. Add environment variable: `HUBSPOT_ACCESS_TOKEN=<your token>`
+3. Add environment variables:
+   - `HUBSPOT_ACCESS_TOKEN=<your token>`
+   - `DASHBOARD_PASSWORD=<your chosen password>`
 4. Railway auto-builds and deploys on every push to `main`
 
 ---
