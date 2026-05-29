@@ -322,6 +322,9 @@ export default function HomePage() {
       {/* ── Exclusions ── */}
       <ExclusionsPanel />
 
+      {/* ── Version stamp — remove once deployment confirmed ── */}
+      <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4 }}>v2026-05-28-d</div>
+
       {/* ── Initiative content ── */}
       <InitiativeView
         key={activeTab}
