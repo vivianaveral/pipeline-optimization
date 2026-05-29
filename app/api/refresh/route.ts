@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (step) {
-      return await handleInitiative(token, step);
+      return await handleInitiative(token, step, req);
     }
 
     // No step param — run everything sequentially (dev/testing convenience; Railway uses per-step calls)
@@ -39,11 +39,18 @@ export async function GET() {
 
 // ─── Per-step handlers ───────────────────────────────────────────────────────
 
-async function handleInitiative(token: string, id: string) {
+async function handleInitiative(token: string, id: string, req: NextRequest) {
   const initiative = INITIATIVES.find((i) => i.id === id);
   if (!initiative) {
     return NextResponse.json({ error: `Unknown initiative id: ${id}` }, { status: 400 });
   }
+
+  // Optional date overrides from query params (supplied by period filter)
+  const sp = req.nextUrl.searchParams;
+  const paramOldFrom = sp.get("oldFrom") ?? undefined;
+  const paramOldTo   = sp.get("oldTo")   ?? undefined;
+  const paramNewFrom = sp.get("newFrom") ?? undefined;
+  const paramNewTo   = sp.get("newTo")   ?? undefined;
 
   let result: CacheData["initiatives"][string];
 
@@ -58,27 +65,28 @@ async function handleInitiative(token: string, id: string) {
       return NextResponse.json({ error: `Initiative ${id} has no entryProperty configured` }, { status: 400 });
     }
 
-    const oldTo =
-      initiative.oldMotion.dateTo && initiative.oldMotion.dateTo !== "TBD"
-        ? initiative.oldMotion.dateTo
-        : new Date().toISOString().split("T")[0];
+    const today = new Date().toISOString().split("T")[0];
 
-    const newFrom =
-      initiative.newMotion.dateFrom !== "TBD"
-        ? initiative.newMotion.dateFrom
-        : new Date().toISOString().split("T")[0];
+    // Use param overrides when present, fall back to initiative config
+    const oldFrom = paramOldFrom ?? initiative.oldMotion.dateFrom;
+    const oldTo   = paramOldTo   ?? (initiative.oldMotion.dateTo && initiative.oldMotion.dateTo !== "TBD"
+      ? initiative.oldMotion.dateTo : today);
+    const newFrom = paramNewFrom ?? (initiative.newMotion.dateFrom !== "TBD"
+      ? initiative.newMotion.dateFrom : today);
+    const newTo   = paramNewTo; // undefined = open-ended (all data), string = period cap
 
-    console.log(`[refresh] Fetching initiative ${id}: old ${initiative.oldMotion.dateFrom}→${oldTo}, new ${newFrom}+`);
+    console.log(`[refresh] Fetching initiative ${id}: old ${oldFrom}→${oldTo}, new ${newFrom}${newTo ? `→${newTo}` : "+"}`);
 
     try {
       result = await fetchInitiativeData(
         token,
         initiative.id,
         entryProperty,
-        initiative.oldMotion.dateFrom,
+        oldFrom,
         oldTo,
         newFrom,
-        initiative.newMotion.maturityDays ?? 42
+        initiative.newMotion.maturityDays ?? 42,
+        newTo
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -123,11 +131,13 @@ async function handleHolistic(token: string) {
   const existing = readCache() ?? emptyCache();
   existing.holistic = holistic;
   existing.refreshed_at = new Date().toISOString();
-  writeCache(existing);
+  const cacheWrite = writeCache(existing);
 
   const monthCount = Object.keys(holistic).length;
   console.log(`[refresh] Holistic done — ${monthCount} months`);
-  return NextResponse.json({ ok: true, step: "holistic", months: monthCount });
+
+  // Return holistic data directly so client can render without filesystem dependency
+  return NextResponse.json({ ok: true, step: "holistic", months: monthCount, data: holistic, cache_written: cacheWrite.ok });
 }
 
 async function handleAll(token: string) {

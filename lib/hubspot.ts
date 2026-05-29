@@ -239,7 +239,8 @@ export async function fetchInitiativeData(
   oldFrom: string,
   oldTo: string,
   newFrom: string,
-  maturityDays: number
+  maturityDays: number,
+  newTo?: string // optional — supplied when a period filter caps the new motion window
 ): Promise<{ old: MotionMetrics; new: MotionMetrics }> {
   const exclusionFilter = getExclusionFilter();
 
@@ -262,13 +263,16 @@ export async function fetchInitiativeData(
     limit: 200,
   });
   await sleep(PAGE_DELAY_MS);
+
+  // New motion: open-ended GTE for "all data", BETWEEN when a period cap is supplied
+  const newMotionDateFilter = newTo
+    ? { propertyName: entryProperty, operator: "BETWEEN", value: newFrom, highValue: newTo }
+    : { propertyName: entryProperty, operator: "GTE", value: newFrom };
+
   const newDeals = await fetchAllDeals(token, {
     filterGroups: [
       {
-        filters: [
-          { propertyName: entryProperty, operator: "GTE", value: newFrom },
-          ...baseFilters,
-        ],
+        filters: [newMotionDateFilter, ...baseFilters],
       },
     ],
     properties: DEAL_PROPERTIES,
