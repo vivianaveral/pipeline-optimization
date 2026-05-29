@@ -93,7 +93,6 @@ export default function HomePage() {
   const [activeTab, setActiveTab]         = useState("01");
   const [cacheData, setCacheData]         = useState<CacheData | null>(null);
   const [loading, setLoading]             = useState(false);
-  const [holisticLoading, setHolisticLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
   const [errorMsg, setErrorMsg]           = useState<string | null>(null);
 
@@ -144,21 +143,6 @@ export default function HomePage() {
     return json;
   }, []);
 
-  // Holistic fetch updates ONLY holisticData — never touches initiative cache.
-  const fetchHolistic = useCallback(async () => {
-    setHolisticLoading(true);
-    try {
-      const res = await fetch("/api/refresh?step=holistic", { method: "POST" });
-      let json: Record<string, unknown> = {};
-      try { json = await res.json(); } catch { return; }
-      if (res.ok && json.data) {
-        setHolisticData(json.data as Record<string, HolisticMonthData>);
-      }
-    } finally {
-      setHolisticLoading(false);
-    }
-  }, []);
-
   // ─── Refresh handler ──────────────────────────────────────────────────────────
   const handleRefresh = useCallback(async (tabId = activeTab, overridePeriod?: Period) => {
     const ini = INITIATIVES.find((i) => i.id === tabId)!;
@@ -170,10 +154,13 @@ export default function HomePage() {
     setErrorMsg(null);
 
     try {
-      const json = await fetchInitiative(tabId, effective);
+      // Fetch initiative and holistic in parallel
+      const [json, holisticRes] = await Promise.all([
+        fetchInitiative(tabId, effective),
+        fetch("/api/refresh?step=holistic", { method: "POST" }).then(r => r.json()).catch(() => null),
+      ]);
 
       if (json.data) {
-        // Update only initiative data — holisticData is untouched here.
         setCacheData((prev) => ({
           refreshed_at: new Date().toISOString(),
           initiatives: { ...(prev?.initiatives ?? {}), [tabId]: json.data as CacheData["initiatives"][string] },
@@ -184,18 +171,20 @@ export default function HomePage() {
         if (json.cache_written === false) {
           setErrorMsg("Data loaded but cache write failed — data will reset on next page load. Check Railway logs.");
         }
-
-        // Fire holistic refresh in background — holisticData stays visible the whole time.
-        fetchHolistic().catch(console.error);
       } else {
         await loadCache();
+      }
+
+      // Update holistic state from parallel fetch result
+      if (holisticRes?.data) {
+        setHolisticData(holisticRes.data as Record<string, HolisticMonthData>);
       }
     } catch (e) {
       setErrorMsg(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(false);
     }
-  }, [activeTab, period, customFrom, customTo, fetchInitiative, fetchHolistic, loadCache]);
+  }, [activeTab, period, customFrom, customTo, fetchInitiative, loadCache]);
 
   // Auto-fetch when period changes (skip first render).
   useEffect(() => {
@@ -302,7 +291,7 @@ export default function HomePage() {
           {loading
             ? `Fetching Initiative ${activeTab} from HubSpot… (${periodLabel})`
             : hasData
-            ? `Initiative ${activeTab} · ${periodLabel}${refreshedAt ? ` · ${refreshedAt}` : ""}${holisticLoading ? " · refreshing holistic…" : ""}`
+            ? `Initiative ${activeTab} · ${periodLabel}${refreshedAt ? ` · ${refreshedAt}` : ""}`
             : "No data — click Refresh to load from HubSpot."}
         </span>
       </div>
@@ -321,9 +310,6 @@ export default function HomePage() {
 
       {/* ── Exclusions ── */}
       <ExclusionsPanel />
-
-      {/* ── Version stamp — remove once deployment confirmed ── */}
-      <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4 }}>v2026-05-28-d</div>
 
       {/* ── Initiative content ── */}
       <InitiativeView
