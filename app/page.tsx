@@ -9,16 +9,13 @@ import InitiativeView from "@/components/InitiativeView";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Period = "all" | "this_month" | "last_month" | "this_q" | "last_q" | "custom";
-
 interface PeriodDates { from: string; to: string }
-
 interface EffectiveDates {
   oldFrom: string; oldTo: string;
-  newFrom: string; newTo?: string; // undefined = open-ended (all data)
+  newFrom: string; newTo?: string;
 }
 
-// ─── AU FY quarter helpers ────────────────────────────────────────────────────
-// Q1: Jul–Sep  Q2: Oct–Dec  Q3: Jan–Mar  Q4: Apr–Jun
+// ─── AU FY quarter helpers (Q1 Jul–Sep, Q2 Oct–Dec, Q3 Jan–Mar, Q4 Apr–Jun) ──
 
 function toDateStr(d: Date) { return d.toISOString().split("T")[0]; }
 
@@ -29,7 +26,6 @@ function getAUFYQuarter(d: Date): { start: Date; end: Date } {
   if (m >= 0 && m <= 2)  return { start: new Date(y, 0,  1), end: new Date(y,  2, 31) };
                           return { start: new Date(y, 3,  1), end: new Date(y,  5, 30) };
 }
-
 function getLastAUFYQuarter(d: Date): { start: Date; end: Date } {
   const curr = getAUFYQuarter(d);
   const prev = new Date(curr.start); prev.setDate(prev.getDate() - 1);
@@ -37,35 +33,20 @@ function getLastAUFYQuarter(d: Date): { start: Date; end: Date } {
 }
 
 function getPeriodDates(period: Period, customFrom: string, customTo: string): PeriodDates | null {
-  const today = new Date();
-  const todayStr = toDateStr(today);
+  const today = new Date(); const todayStr = toDateStr(today);
   if (period === "all") return null;
-  if (period === "this_month") {
+  if (period === "this_month")
     return { from: toDateStr(new Date(today.getFullYear(), today.getMonth(), 1)), to: todayStr };
-  }
-  if (period === "last_month") {
-    return {
-      from: toDateStr(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
-      to:   toDateStr(new Date(today.getFullYear(), today.getMonth(), 0)),
-    };
-  }
-  if (period === "this_q") {
-    const q = getAUFYQuarter(today);
-    return { from: toDateStr(q.start), to: todayStr };
-  }
-  if (period === "last_q") {
-    const q = getLastAUFYQuarter(today);
-    return { from: toDateStr(q.start), to: toDateStr(q.end) };
-  }
-  if (period === "custom" && customFrom && customTo) {
-    return { from: customFrom, to: customTo };
-  }
+  if (period === "last_month")
+    return { from: toDateStr(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+             to:   toDateStr(new Date(today.getFullYear(), today.getMonth(), 0)) };
+  if (period === "this_q") { const q = getAUFYQuarter(today); return { from: toDateStr(q.start), to: todayStr }; }
+  if (period === "last_q") { const q = getLastAUFYQuarter(today); return { from: toDateStr(q.start), to: toDateStr(q.end) }; }
+  if (period === "custom" && customFrom && customTo) return { from: customFrom, to: customTo };
   return null;
 }
 
-// Calendar months that fall within a period (e.g. "this_q" → ["2026-04","2026-05","2026-06"])
-// Used to scope the holistic funnel month dropdown to match the active period.
-// Returns null for "all data" (no restriction).
+// Calendar months covered by the active period — used to scope the holistic funnel.
 function getMonthsInPeriod(period: Period, customFrom: string, customTo: string): string[] | null {
   const dates = getPeriodDates(period, customFrom, customTo);
   if (!dates) return null;
@@ -79,23 +60,18 @@ function getMonthsInPeriod(period: Period, customFrom: string, customTo: string)
   return months;
 }
 
-// Intersect period window with initiative config dates to get what we actually query
+// Intersect period window with initiative config dates.
 function getEffectiveDates(ini: Initiative, period: PeriodDates | null): EffectiveDates | null {
   const today = toDateStr(new Date());
   const configOldFrom = ini.oldMotion.dateFrom;
-  const configOldTo = ini.oldMotion.dateTo && ini.oldMotion.dateTo !== "TBD" ? ini.oldMotion.dateTo : today;
+  const configOldTo   = ini.oldMotion.dateTo && ini.oldMotion.dateTo !== "TBD" ? ini.oldMotion.dateTo : today;
   const configNewFrom = ini.newMotion.dateFrom !== "TBD" ? ini.newMotion.dateFrom : today;
-
-  if (!period) {
-    // All data — no overrides; API uses config defaults
-    return null;
-  }
-
+  if (!period) return null;
   return {
     oldFrom: period.from > configOldFrom ? period.from : configOldFrom,
     oldTo:   period.to   < configOldTo   ? period.to   : configOldTo,
     newFrom: period.from > configNewFrom  ? period.from : configNewFrom,
-    newTo:   period.to, // always cap new motion when a period is active
+    newTo:   period.to,
   };
 }
 
@@ -111,24 +87,27 @@ function emptyMetrics(maturityDays = 42): MotionMetrics {
   };
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function HomePage() {
-  const [activeTab, setActiveTab]     = useState("01");
-  const [cacheData, setCacheData]     = useState<CacheData | null>(null);
-  const [loading, setLoading]         = useState(false);
+  const [activeTab, setActiveTab]         = useState("01");
+  const [cacheData, setCacheData]         = useState<CacheData | null>(null);
+  const [loading, setLoading]             = useState(false);
+  const [holisticLoading, setHolisticLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg]       = useState<string | null>(null);
+  const [errorMsg, setErrorMsg]           = useState<string | null>(null);
 
-  // Period filter state
+  // Holistic data lives in its OWN state slice — never cleared by initiative refreshes.
+  const [holisticData, setHolisticData]   = useState<Record<string, HolisticMonthData>>({});
+
+  // Period filter
   const [period, setPeriod]         = useState<Period>("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo]     = useState("");
 
-  // Ref to suppress the auto-fetch on mount (only fire on subsequent period changes)
   const periodInitRef = useRef(false);
 
-  // Load server cache on mount
+  // ─── Load server cache on mount ──────────────────────────────────────────────
   const loadCache = useCallback(async () => {
     try {
       const res = await fetch("/api/data");
@@ -136,16 +115,19 @@ export default function HomePage() {
         const data: CacheData = await res.json();
         setCacheData(data);
         setLastRefreshed(data.refreshed_at);
+        // Populate holistic state from cache independently
+        if (data.holistic && Object.keys(data.holistic).length > 0) {
+          setHolisticData(data.holistic);
+        }
       }
-    } catch { /* cache miss is fine */ }
+    } catch { /* cache miss on first load — fine */ }
   }, []);
 
   useEffect(() => { loadCache(); }, [loadCache]);
 
-  // ─── Core fetch helpers ────────────────────────────────────────────────────
-
+  // ─── Fetch helpers ────────────────────────────────────────────────────────────
   const fetchInitiative = useCallback(async (tabId: string, effectiveDates: EffectiveDates | null) => {
-    const url = new URL(`/api/refresh`, window.location.origin);
+    const url = new URL("/api/refresh", window.location.origin);
     url.searchParams.set("step", tabId);
     if (effectiveDates) {
       url.searchParams.set("oldFrom", effectiveDates.oldFrom);
@@ -153,7 +135,6 @@ export default function HomePage() {
       url.searchParams.set("newFrom", effectiveDates.newFrom);
       if (effectiveDates.newTo) url.searchParams.set("newTo", effectiveDates.newTo);
     }
-
     const res = await fetch(url.toString(), { method: "POST" });
     let json: Record<string, unknown> = {};
     try { json = await res.json(); } catch {
@@ -163,26 +144,27 @@ export default function HomePage() {
     return json;
   }, []);
 
+  // Holistic fetch updates ONLY holisticData — never touches initiative cache.
   const fetchHolistic = useCallback(async () => {
-    const res = await fetch("/api/refresh?step=holistic", { method: "POST" });
-    let json: Record<string, unknown> = {};
-    try { json = await res.json(); } catch { return; }
-    if (res.ok && json.data) {
-      setCacheData((prev) => ({
-        refreshed_at: new Date().toISOString(),
-        initiatives: prev?.initiatives ?? {},
-        holistic: json.data as Record<string, HolisticMonthData>,
-      }));
+    setHolisticLoading(true);
+    try {
+      const res = await fetch("/api/refresh?step=holistic", { method: "POST" });
+      let json: Record<string, unknown> = {};
+      try { json = await res.json(); } catch { return; }
+      if (res.ok && json.data) {
+        setHolisticData(json.data as Record<string, HolisticMonthData>);
+      }
+    } finally {
+      setHolisticLoading(false);
     }
   }, []);
 
-  // ─── Refresh handler ───────────────────────────────────────────────────────
-
+  // ─── Refresh handler ──────────────────────────────────────────────────────────
   const handleRefresh = useCallback(async (tabId = activeTab, overridePeriod?: Period) => {
     const ini = INITIATIVES.find((i) => i.id === tabId)!;
     const activePeriod = overridePeriod ?? period;
-    const periodDates = getPeriodDates(activePeriod, customFrom, customTo);
-    const effective = getEffectiveDates(ini, periodDates);
+    const periodDates  = getPeriodDates(activePeriod, customFrom, customTo);
+    const effective    = getEffectiveDates(ini, periodDates);
 
     setLoading(true);
     setErrorMsg(null);
@@ -191,6 +173,7 @@ export default function HomePage() {
       const json = await fetchInitiative(tabId, effective);
 
       if (json.data) {
+        // Update only initiative data — holisticData is untouched here.
         setCacheData((prev) => ({
           refreshed_at: new Date().toISOString(),
           initiatives: { ...(prev?.initiatives ?? {}), [tabId]: json.data as CacheData["initiatives"][string] },
@@ -199,10 +182,10 @@ export default function HomePage() {
         setLastRefreshed(new Date().toISOString());
 
         if (json.cache_written === false) {
-          setErrorMsg("Data loaded but cache write failed on the server — data will reset on next page load. Check Railway logs.");
+          setErrorMsg("Data loaded but cache write failed — data will reset on next page load. Check Railway logs.");
         }
 
-        // Auto-fetch holistic after every initiative refresh (fire-and-forget)
+        // Fire holistic refresh in background — holisticData stays visible the whole time.
         fetchHolistic().catch(console.error);
       } else {
         await loadCache();
@@ -214,78 +197,91 @@ export default function HomePage() {
     }
   }, [activeTab, period, customFrom, customTo, fetchInitiative, fetchHolistic, loadCache]);
 
-  // Auto-fetch when period changes (but not on first render)
+  // Auto-fetch when period changes (skip first render).
   useEffect(() => {
     if (!periodInitRef.current) { periodInitRef.current = true; return; }
-    if (period === "custom" && (!customFrom || !customTo)) return; // wait for both dates
+    if (period === "custom" && (!customFrom || !customTo)) return;
     handleRefresh(activeTab, period);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period, customFrom, customTo]);
 
-  // ─── Derived display values ────────────────────────────────────────────────
-
-  const initiative   = INITIATIVES.find((i) => i.id === activeTab)!;
+  // ─── Derived values ───────────────────────────────────────────────────────────
+  const initiative     = INITIATIVES.find((i) => i.id === activeTab)!;
   const initiativeData = cacheData?.initiatives?.[activeTab];
   const old     = initiativeData?.old ?? emptyMetrics(initiative.newMotion.maturityDays);
   const newData = initiativeData?.new ?? emptyMetrics(initiative.newMotion.maturityDays);
-  const holistic: Record<string, HolisticMonthData> = cacheData?.holistic ?? {};
 
   const periodDates    = getPeriodDates(period, customFrom, customTo);
   const effectiveDates = getEffectiveDates(initiative, periodDates);
-  const periodMonths   = getMonthsInPeriod(period, customFrom, customTo); // null = show all
+  const periodMonths   = getMonthsInPeriod(period, customFrom, customTo);
 
-  const hasData      = !!initiativeData;
-  const refreshedAt  = lastRefreshed
+  const hasData     = !!initiativeData;
+  const refreshedAt = lastRefreshed
     ? new Date(lastRefreshed).toLocaleString("en-AU", { timeZone: "Asia/Singapore" }) + " SGT"
     : null;
 
-  const periodLabel = period === "all" ? "All data"
+  const periodLabel = period === "all"        ? "All data"
     : period === "this_month" ? "This month"
     : period === "last_month" ? "Last month"
     : period === "this_q"     ? "This quarter (AU FY)"
     : period === "last_q"     ? "Last quarter (AU FY)"
+    : customFrom && customTo  ? `${customFrom} – ${customTo}`
     : "Custom range";
 
-  // ─── Render ────────────────────────────────────────────────────────────────
-
+  // ─── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="wrap">
-      {/* ── Header ── */}
+
+      {/* ── Header card ── */}
       <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+
+        {/* Row 1: title + refresh button */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
           <div>
             <p style={{ fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>BruntWork · Internal</p>
             <h1>Sales Initiative KPI Tracker</h1>
           </div>
-
-          {/* Period filter + Refresh */}
-          <div className="fl">
-            <div className="assumption">
-              <label>Period</label>
-              <select value={period} onChange={(e) => { setErrorMsg(null); setPeriod(e.target.value as Period); }}
-                style={{ width: "auto" }}>
-                <option value="all">All data</option>
-                <option value="this_month">This month</option>
-                <option value="last_month">Last month</option>
-                <option value="this_q">This quarter (AU FY)</option>
-                <option value="last_q">Last quarter (AU FY)</option>
-                <option value="custom">Custom range</option>
-              </select>
-            </div>
-            {period === "custom" && (
-              <div className="fl">
-                <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
-                <span style={{ color: "var(--muted)", fontSize: 11 }}>–</span>
-                <input type="date" value={customTo}   onChange={(e) => setCustomTo(e.target.value)}   />
-              </div>
-            )}
-            <button className="btn primary" onClick={() => handleRefresh()} disabled={loading}>
-              {loading ? "⟳ Refreshing…" : `↻ Refresh Initiative ${activeTab}`}
-            </button>
-          </div>
+          <button className="btn primary" onClick={() => handleRefresh()} disabled={loading}>
+            {loading ? "⟳ Refreshing…" : `↻ Refresh Initiative ${activeTab}`}
+          </button>
         </div>
 
-        {/* Nav tabs */}
+        {/* Row 2: period filter — its own clearly visible row */}
+        <div style={{
+          display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10,
+          marginTop: 12, paddingTop: 12,
+          borderTop: "1px solid var(--border)",
+        }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", minWidth: 46 }}>Period</span>
+          <select
+            value={period}
+            onChange={(e) => { setErrorMsg(null); setPeriod(e.target.value as Period); }}
+            style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--card)", color: "var(--text)" }}
+          >
+            <option value="all">All data</option>
+            <option value="this_month">This month</option>
+            <option value="last_month">Last month</option>
+            <option value="this_q">This quarter (AU FY Q1=Jul–Sep, Q2=Oct–Dec, Q3=Jan–Mar, Q4=Apr–Jun)</option>
+            <option value="last_q">Last quarter (AU FY)</option>
+            <option value="custom">Custom date range</option>
+          </select>
+          {period === "custom" && (
+            <>
+              <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
+                style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)" }} />
+              <span style={{ color: "var(--muted)", fontSize: 11 }}>–</span>
+              <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
+                style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)" }} />
+            </>
+          )}
+          {period !== "all" && (
+            <span style={{ fontSize: 11, color: "var(--old)", fontWeight: 500 }}>
+              Filters both cohort funnels + holistic funnel
+            </span>
+          )}
+        </div>
+
+        {/* Row 3: initiative nav tabs */}
         <div className="nav-tabs">
           {INITIATIVES.map((ini) => (
             <button key={ini.id}
@@ -306,7 +302,7 @@ export default function HomePage() {
           {loading
             ? `Fetching Initiative ${activeTab} from HubSpot… (${periodLabel})`
             : hasData
-            ? `Initiative ${activeTab} · ${periodLabel}${refreshedAt ? ` · ${refreshedAt}` : ""}`
+            ? `Initiative ${activeTab} · ${periodLabel}${refreshedAt ? ` · ${refreshedAt}` : ""}${holisticLoading ? " · refreshing holistic…" : ""}`
             : "No data — click Refresh to load from HubSpot."}
         </span>
       </div>
@@ -332,7 +328,7 @@ export default function HomePage() {
         initiative={initiative}
         old={old}
         newData={newData}
-        holistic={holistic}
+        holistic={holisticData}
         effectiveNewFrom={effectiveDates?.newFrom ?? initiative.newMotion.dateFrom}
         effectiveNewTo={effectiveDates?.newTo}
         periodMonths={periodMonths}
