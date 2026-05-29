@@ -290,6 +290,7 @@ export async function fetchInitiativeData(
 }
 
 export interface HolisticMonthData {
+  // ── Sales Funnel view (cohort: anchored on lead-entry date, pipeline=default) ──
   lead: number;
   enrolled_in_seq: number;
   zoom_booked: number;
@@ -298,7 +299,7 @@ export interface HolisticMonthData {
   resumes_sent: number;
   interview_scheduled: number;
   agreement_sent: number;
-  active_client: number;
+  active_client: number;       // note: may be low — active clients move out of default pipeline
   closed_lost_total: number;
   cl_never_met: number;
   cl_booked_no_place: number;
@@ -312,6 +313,12 @@ export interface HolisticMonthData {
   cl_from_interview: number;
   cl_from_agreement: number;
   cl_from_active: number;
+  // ── Sales Pipeline view (activity-based: each metric anchored on its own date, all pipelines) ──
+  sp_zoom_booked: number;        // zoom date in month, any pipeline
+  sp_closed_won: number;         // earliest post-billing date in month, any pipeline
+  sp_active_pipeline: number;    // entered post-billing in month, still open today
+  sp_active_client: number;      // active_client date in month, any pipeline
+  sp_closed_lost: number;        // closed_lost date in month, any pipeline
 }
 
 export async function fetchHolisticFunnel(
@@ -336,6 +343,7 @@ export async function fetchHolisticFunnel(
       ...exclusionFilter,
     ];
 
+    // ── Query A: cohort (pipeline=default, lead entry in month) ── Sales Funnel view
     const deals = await fetchAllDeals(token, {
       filterGroups: [
         {
@@ -353,7 +361,62 @@ export async function fetchHolisticFunnel(
       properties: DEAL_PROPERTIES,
       limit: 200,
     });
+    await sleep(PAGE_DELAY_MS);
 
+    // ── Query B: zoom booked in month, any pipeline ── Sales Pipeline view
+    const zoomDeals = await fetchAllDeals(token, {
+      filterGroups: [{
+        filters: [
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, operator: "BETWEEN", value: from, highValue: to },
+          ...exclusionFilter,
+        ],
+      }],
+      properties: DEAL_PROPERTIES,
+      limit: 200,
+    });
+    await sleep(PAGE_DELAY_MS);
+
+    // ── Query C: any post-billing stage entered in month, any pipeline ── Sales Pipeline closed won / active pipeline
+    // OR across all 4 post-billing stages via multiple filterGroups
+    const pbInMonthDeals = await fetchAllDeals(token, {
+      filterGroups: POST_BILLING_STAGES.map((stageId) => ({
+        filters: [
+          { propertyName: `hs_v2_date_entered_${stageId}`, operator: "BETWEEN", value: from, highValue: to },
+          ...exclusionFilter,
+        ],
+      })),
+      properties: DEAL_PROPERTIES,
+      limit: 200,
+    });
+    await sleep(PAGE_DELAY_MS);
+
+    // ── Query D: active client placed in month, any pipeline ──
+    const activeDeals = await fetchAllDeals(token, {
+      filterGroups: [{
+        filters: [
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "BETWEEN", value: from, highValue: to },
+          ...exclusionFilter,
+        ],
+      }],
+      properties: DEAL_PROPERTIES,
+      limit: 200,
+    });
+    await sleep(PAGE_DELAY_MS);
+
+    // ── Query E: closed lost in month, any pipeline ──
+    const clDeals = await fetchAllDeals(token, {
+      filterGroups: [{
+        filters: [
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`, operator: "BETWEEN", value: from, highValue: to },
+          ...exclusionFilter,
+        ],
+      }],
+      properties: DEAL_PROPERTIES,
+      limit: 200,
+    });
+    await sleep(PAGE_DELAY_MS);
+
+    // ── Aggregate cohort (Query A) ──
     let zoom = 0, enrolledInSeq = 0, pb = 0, recruiting = 0, resumesSent = 0;
     let interviewSched = 0, agreementSent = 0, active = 0;
     let cl_never = 0, cl_placed = 0, cl_total = 0;
@@ -402,6 +465,24 @@ export async function fetchHolisticFunnel(
       }
     }
 
+    // ── Aggregate Sales Pipeline metrics (Queries B–E) ──
+
+    // sp_closed_won / sp_active_pipeline: deduplicate pb query then find earliest pb date in month
+    const pbDedupe = new Map<string, HubSpotDeal>();
+    for (const d of pbInMonthDeals) pbDedupe.set(d.id, d);
+    let sp_closed_won = 0, sp_active_pipeline = 0;
+    for (const d of pbDedupe.values()) {
+      const pbMs = getPostBillingDate(d);
+      if (!pbMs) continue;
+      const pbMonthKey = new Date(pbMs).toISOString().slice(0, 7); // "YYYY-MM"
+      if (pbMonthKey !== key) continue; // earliest pb date not in this month
+      sp_closed_won++;
+      const hasActive = d.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
+      const hasCL     = d.properties[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`] ||
+                        d.properties[`hs_v2_date_entered_${STAGE_IDS.DO_NOT_CONTACT}`];
+      if (!hasActive && !hasCL) sp_active_pipeline++;
+    }
+
     results[key] = {
       lead: deals.length,
       enrolled_in_seq: enrolledInSeq,
@@ -424,6 +505,11 @@ export async function fetchHolisticFunnel(
       cl_from_interview: cl_int,
       cl_from_agreement: cl_agr,
       cl_from_active: cl_act,
+      sp_zoom_booked: zoomDeals.length,
+      sp_closed_won,
+      sp_active_pipeline,
+      sp_active_client: activeDeals.length,
+      sp_closed_lost: clDeals.length,
     };
   }
 

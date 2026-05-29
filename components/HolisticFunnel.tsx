@@ -9,6 +9,8 @@ interface Props {
   allowedMonths: string[] | null;
 }
 
+type HolisticTab = "pipeline" | "funnel";
+
 function FBar({ pctVal, name, stat, color }: { pctVal: number; name: string; stat: string; color: string }) {
   const w = Math.min(Math.max(pctVal, 0.5), 100);
   return (
@@ -35,6 +37,7 @@ export default function HolisticFunnel({ data, allowedMonths }: Props) {
     : allMonths;
 
   const [selectedMonth, setSelectedMonth] = useState(months[0] ?? "");
+  const [activeTab, setActiveTab] = useState<HolisticTab>("pipeline"); // Sales Pipeline is default
 
   useEffect(() => {
     if (months.length > 0 && !months.includes(selectedMonth)) {
@@ -47,9 +50,7 @@ export default function HolisticFunnel({ data, allowedMonths }: Props) {
   if (months.length === 0) {
     return (
       <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <h3 style={{ marginBottom: 0 }}>Full Sales Pipeline — Holistic Funnel</h3>
-        </div>
+        <h3 style={{ marginBottom: 8 }}>Sales Pipeline</h3>
         <p style={{ fontSize: 12, color: "var(--muted)" }}>
           No holistic data available for this period yet. Click Refresh to load HubSpot data.
         </p>
@@ -59,14 +60,6 @@ export default function HolisticFunnel({ data, allowedMonths }: Props) {
 
   const d = data[selectedMonth];
   if (!d) return null;
-
-  const lead = d.lead || 1;
-  const zoomPct   = (d.zoom_booked     / lead) * 100;
-  const pbPct     = (d.pipeline_entered / lead) * 100;
-  const activePct = (d.active_client    / lead) * 100;
-  const dropRate  = d.zoom_booked > 0
-    ? ((d.zoom_booked - d.pipeline_entered) / d.zoom_booked) * 100
-    : 0;
 
   const monthSelector = months.length > 1 ? (
     <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}>
@@ -80,35 +73,131 @@ export default function HolisticFunnel({ data, allowedMonths }: Props) {
 
   return (
     <>
-      {/* ── Holistic Funnel ── */}
+      {/* ── Main card with tab toggle ── */}
       <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <h3 style={{ marginBottom: 0 }}>Full Sales Pipeline — Holistic Funnel</h3>
+        {/* Header row: title + month selector */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h3 style={{ marginBottom: 0 }}>
+            {activeTab === "pipeline" ? "Sales Pipeline" : "Sales Funnel"}
+          </h3>
           {monthSelector}
         </div>
 
-        <FBar pctVal={100}       name="Lead (form fill)"                       stat={d.lead.toLocaleString()}                                      color="rgba(37,99,235,.10)" />
-        <FBar pctVal={zoomPct}   name="↳ Zoom Call Booked"                     stat={`${d.zoom_booked.toLocaleString()} · ${zoomPct.toFixed(1)}%`}  color="rgba(37,99,235,.18)" />
-        <FBar pctVal={pbPct}     name="↳ Entered Pipeline (first post-billing)" stat={`${d.pipeline_entered.toLocaleString()} · ${pbPct.toFixed(1)}%`} color="rgba(5,150,105,.15)" />
-        <FBar pctVal={activePct} name="↳ Active Client (placed)"               stat={`${d.active_client.toLocaleString()} · ${activePct.toFixed(1)}%`} color="rgba(5,150,105,.25)" />
-
-        <div style={{ marginTop: 10, padding: "8px 12px", background: "var(--bg)", borderRadius: 6, fontSize: 11, color: "var(--muted)" }}>
-          <strong style={{ color: "var(--text)" }}>
-            Zoom → Active Client:{" "}
-            {d.zoom_booked > 0 ? ((d.active_client / d.zoom_booked) * 100).toFixed(1) : "—"}%
-          </strong>
-          {"  ·  "}
-          Implied drop rate (no-show + didn't convert): {dropRate.toFixed(1)}% of Zoom-booked leads
+        {/* Tab toggle */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+          {(["pipeline", "funnel"] as HolisticTab[]).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{
+                fontSize: 12,
+                padding: "5px 14px",
+                borderRadius: 20,
+                border: "1px solid var(--border)",
+                background: activeTab === tab ? "var(--new)" : "var(--card)",
+                color: activeTab === tab ? "#fff" : "var(--text)",
+                cursor: "pointer",
+                fontWeight: activeTab === tab ? 600 : 400,
+                transition: "all 0.15s",
+              }}
+            >
+              {tab === "pipeline" ? "Sales Pipeline" : "Sales Funnel"}
+            </button>
+          ))}
         </div>
 
-        <div className="sdiv">Closed Lost</div>
-        <FBar pctVal={d.cl_never_met      > 0 ? (d.cl_never_met      / lead) * 100 : 0} name="Never booked a meeting" stat={d.cl_never_met.toLocaleString()}       color="rgba(220,38,38,.10)" />
-        <FBar pctVal={d.cl_booked_no_place > 0 ? (d.cl_booked_no_place / lead) * 100 : 0} name="Booked, didn't place" stat={d.cl_booked_no_place.toLocaleString()} color="rgba(220,38,38,.18)" />
+        {activeTab === "pipeline"
+          ? <SalesPipelineView d={d} />
+          : <SalesFunnelView d={d} />
+        }
       </div>
 
-      {/* ── Pipeline Leak Analysis — same month as funnel above ── */}
+      {/* ── Pipeline Leak Analysis — shown for both tabs, same month ── */}
       <PipelineLeakAnalysis d={d} monthLabel={fmtMonth(selectedMonth)} />
     </>
+  );
+}
+
+// ─── Sales Pipeline view (activity-based) ────────────────────────────────────
+
+function MetricRow({
+  label, value, sub, color,
+}: { label: string; value: number; sub?: string; color?: string }) {
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between", alignItems: "center",
+      padding: "9px 12px", borderRadius: 8,
+      background: color ?? "var(--bg)",
+      marginBottom: 6,
+    }}>
+      <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>
+      <div style={{ textAlign: "right" }}>
+        <span style={{ fontSize: 20, fontWeight: 700 }}>{value.toLocaleString()}</span>
+        {sub && <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 1 }}>{sub}</div>}
+      </div>
+    </div>
+  );
+}
+
+function SalesPipelineView({ d }: { d: HolisticMonthData }) {
+  const spZ  = d.sp_zoom_booked    ?? 0;
+  const spCW = d.sp_closed_won     ?? 0;
+  const spAP = d.sp_active_pipeline ?? 0;
+  const spAC = d.sp_active_client  ?? 0;
+  const spCL = d.sp_closed_lost    ?? 0;
+
+  return (
+    <div>
+      <MetricRow label="Zoom Call Booked"           value={spZ}  sub="calls booked this month"             color="rgba(37,99,235,.07)" />
+      <MetricRow label="Closed Won (entered pipeline)" value={spCW} sub="first post-billing stage this month" color="rgba(5,150,105,.07)" />
+      <MetricRow label="Active Pipeline (in progress)" value={spAP} sub="entered post-billing this month, still open" color="rgba(5,150,105,.05)" />
+      <MetricRow label="Active Client placed"       value={spAC} sub="placed this month (all pipelines)"    color="rgba(5,150,105,.12)" />
+      <MetricRow label="Closed Lost this month"     value={spCL} sub="closed lost stage entered this month" color="rgba(220,38,38,.06)" />
+
+      {spZ > 0 && (
+        <div style={{ marginTop: 10, padding: "8px 12px", background: "var(--bg)", borderRadius: 6, fontSize: 11, color: "var(--muted)" }}>
+          <strong style={{ color: "var(--text)" }}>
+            Zoom → Placed: {spAC > 0 ? ((spAC / spZ) * 100).toFixed(1) : "0.0"}%
+          </strong>
+          {"  ·  "}
+          Pipeline conversion: {spCW > 0 ? ((spAC / spCW) * 100).toFixed(1) : "0.0"}% of closed-won deals placed
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Sales Funnel view (cohort-based — existing logic) ───────────────────────
+
+function SalesFunnelView({ d }: { d: HolisticMonthData }) {
+  const lead = d.lead || 1;
+  const zoomPct   = (d.zoom_booked     / lead) * 100;
+  const pbPct     = (d.pipeline_entered / lead) * 100;
+  const activePct = (d.active_client    / lead) * 100;
+  const dropRate  = d.zoom_booked > 0
+    ? ((d.zoom_booked - d.pipeline_entered) / d.zoom_booked) * 100
+    : 0;
+
+  return (
+    <div>
+      <FBar pctVal={100}       name="Lead (form fill)"                       stat={d.lead.toLocaleString()}                                      color="rgba(37,99,235,.10)" />
+      <FBar pctVal={zoomPct}   name="↳ Zoom Call Booked"                     stat={`${d.zoom_booked.toLocaleString()} · ${zoomPct.toFixed(1)}%`}  color="rgba(37,99,235,.18)" />
+      <FBar pctVal={pbPct}     name="↳ Entered Pipeline (first post-billing)" stat={`${d.pipeline_entered.toLocaleString()} · ${pbPct.toFixed(1)}%`} color="rgba(5,150,105,.15)" />
+      <FBar pctVal={activePct} name="↳ Active Client (placed)"               stat={`${d.active_client.toLocaleString()} · ${activePct.toFixed(1)}%`} color="rgba(5,150,105,.25)" />
+
+      <div style={{ marginTop: 10, padding: "8px 12px", background: "var(--bg)", borderRadius: 6, fontSize: 11, color: "var(--muted)" }}>
+        <strong style={{ color: "var(--text)" }}>
+          Zoom → Active Client:{" "}
+          {d.zoom_booked > 0 ? ((d.active_client / d.zoom_booked) * 100).toFixed(1) : "—"}%
+        </strong>
+        {"  ·  "}
+        Implied drop rate (no-show + didn't convert): {dropRate.toFixed(1)}% of Zoom-booked leads
+      </div>
+
+      <div className="sdiv">Closed Lost</div>
+      <FBar pctVal={d.cl_never_met       > 0 ? (d.cl_never_met       / lead) * 100 : 0} name="Never booked a meeting" stat={d.cl_never_met.toLocaleString()}       color="rgba(220,38,38,.10)" />
+      <FBar pctVal={d.cl_booked_no_place > 0 ? (d.cl_booked_no_place / lead) * 100 : 0} name="Booked, didn't place"   stat={d.cl_booked_no_place.toLocaleString()} color="rgba(220,38,38,.18)" />
+    </div>
   );
 }
 
@@ -197,6 +286,8 @@ function PipelineLeakAnalysis({ d, monthLabel }: { d: HolisticMonthData; monthLa
       <p style={{ fontSize: 10, color: "var(--muted)", marginTop: 10, marginBottom: 0, fontStyle: "italic" }}>
         Leak rate = closed lost ÷ entered stage. Amber = &gt;50%, red = &gt;70%.{" "}
         Sub-stage counts are directional — reps don&apos;t always update these in sequence.
+        Sales Funnel cohort counts are anchored on lead entry date (pipeline=default);
+        Active Client may be understated as placed deals move out of the default pipeline.
       </p>
     </div>
   );
