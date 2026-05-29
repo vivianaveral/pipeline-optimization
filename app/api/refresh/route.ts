@@ -83,22 +83,28 @@ async function handleInitiative(token: string, id: string) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[refresh] HubSpot error on initiative ${id}:`, err);
-      return NextResponse.json({ error: `Initiative ${id} failed: ${message}` }, { status: 502 });
+      return NextResponse.json({ error: `HubSpot error: ${message}` }, { status: 502 });
     }
   }
 
-  // Merge into existing cache (don't wipe other initiatives)
+  // Try to persist to cache (best-effort — client receives data regardless)
   const existing = readCache() ?? emptyCache();
   existing.initiatives[id] = result;
   existing.refreshed_at = new Date().toISOString();
-  writeCache(existing);
+  const cacheWrite = writeCache(existing);
+  if (!cacheWrite.ok) {
+    console.warn(`[refresh] Cache write failed for initiative ${id}: ${cacheWrite.error} — returning data directly to client`);
+  }
 
   console.log(`[refresh] Initiative ${id} done — enrolled old=${result.old.enrolled} new=${result.new.enrolled}`);
+
+  // Always return the data in the response body so the client can render it
+  // even if the filesystem write failed
   return NextResponse.json({
     ok: true,
     step: id,
-    enrolled_old: result.old.enrolled,
-    enrolled_new: result.new.enrolled,
+    data: result,
+    cache_written: cacheWrite.ok,
   });
 }
 

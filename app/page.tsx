@@ -20,25 +20,20 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState("01");
   const [cacheData, setCacheData] = useState<CacheData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<"ok" | "loading" | "error" | "empty">("empty");
-  const [statusText, setStatusText] = useState("No data loaded. Click Refresh to load the current tab from HubSpot.");
+  const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Load whatever is in the server cache on mount
   const loadCache = useCallback(async () => {
     try {
       const res = await fetch("/api/data");
       if (res.ok) {
         const data: CacheData = await res.json();
         setCacheData(data);
-        setStatus("ok");
-        const d = new Date(data.refreshed_at);
-        setStatusText(`Last refreshed: ${d.toLocaleString("en-AU", { timeZone: "Asia/Singapore" })} SGT`);
-      } else {
-        setStatus("empty");
-        setStatusText("No data yet. Click Refresh to pull from HubSpot.");
+        setLastRefreshed(data.refreshed_at);
       }
     } catch {
-      setStatus("error");
-      setStatusText("Error loading cache.");
+      // Cache miss is fine — user just hasn't refreshed yet
     }
   }, []);
 
@@ -49,25 +44,42 @@ export default function HomePage() {
   const handleRefresh = async () => {
     const initiative = INITIATIVES.find((i) => i.id === activeTab)!;
     setLoading(true);
-    setStatus("loading");
-    setStatusText(`Refreshing Initiative ${activeTab}: ${initiative.name}…`);
+    setErrorMsg(null);
 
     try {
       const res = await fetch(`/api/refresh?step=${activeTab}`, { method: "POST" });
-      const json = await res.json();
-      if (res.ok) {
-        await loadCache();
+
+      // Always try to parse the body — even error responses should be JSON
+      let json: Record<string, unknown> = {};
+      try {
+        json = await res.json();
+      } catch {
+        throw new Error(`Server returned non-JSON response (HTTP ${res.status}). Check Railway logs.`);
+      }
+
+      if (!res.ok) {
+        throw new Error((json.error as string) ?? `HTTP ${res.status}`);
+      }
+
+      // Use data from response body directly (works even if Railway filesystem write failed)
+      if (json.data) {
+        setCacheData((prev) => ({
+          refreshed_at: new Date().toISOString(),
+          initiatives: { ...(prev?.initiatives ?? {}), [activeTab]: json.data as CacheData["initiatives"][string] },
+          holistic: prev?.holistic ?? {},
+        }));
+        setLastRefreshed(new Date().toISOString());
+
+        if (json.cache_written === false) {
+          setErrorMsg("⚠️ Data loaded but could not be saved to cache (Railway filesystem). Data will reset on next page load. Check Railway logs.");
+        }
       } else {
-        const msg = json?.error ?? `HTTP ${res.status}`;
-        console.error(`[refresh] Initiative ${activeTab} failed:`, msg);
-        setStatus("error");
-        setStatusText(`Refresh failed: ${msg}`);
+        // Fallback: try reading from cache endpoint
+        await loadCache();
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "network error";
-      console.error(`[refresh] threw:`, e);
-      setStatus("error");
-      setStatusText(`Refresh failed: ${msg}`);
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      setErrorMsg(`Refresh failed: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -78,6 +90,11 @@ export default function HomePage() {
   const old = initiativeData?.old ?? emptyMetrics(initiative.newMotion.maturityDays);
   const newData = initiativeData?.new ?? emptyMetrics(initiative.newMotion.maturityDays);
   const holistic: Record<string, HolisticMonthData> = cacheData?.holistic ?? {};
+
+  const hasData = !!initiativeData;
+  const refreshedAt = lastRefreshed
+    ? new Date(lastRefreshed).toLocaleString("en-AU", { timeZone: "Asia/Singapore" }) + " SGT"
+    : null;
 
   return (
     <div className="wrap">
@@ -112,9 +129,32 @@ export default function HomePage() {
 
       {/* Status bar */}
       <div className="status">
-        <div className={`dot ${status === "loading" ? "loading" : status === "error" ? "error" : ""}`} />
-        <span>{statusText}</span>
+        <div className={`dot ${loading ? "loading" : hasData ? "" : "error"}`} />
+        <span style={{ color: "var(--muted)" }}>
+          {loading
+            ? `Fetching Initiative ${activeTab} from HubSpot…`
+            : hasData
+            ? `Initiative ${activeTab} loaded${refreshedAt ? ` · ${refreshedAt}` : ""}`
+            : "No data for this tab — click Refresh to load from HubSpot."}
+        </span>
       </div>
+
+      {/* Error banner — prominent, dismissible */}
+      {errorMsg && (
+        <div className="banner" style={{ background: "var(--dangerl)", borderColor: "#fca5a5", color: "#991b1b", marginBottom: 12 }}>
+          <span className="bicon">⚠</span>
+          <div style={{ flex: 1 }}>
+            <strong>Error</strong><br />
+            {errorMsg}
+          </div>
+          <button
+            onClick={() => setErrorMsg(null)}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "#991b1b", fontSize: 16, padding: "0 4px", alignSelf: "flex-start" }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Exclusions */}
       <ExclusionsPanel />
