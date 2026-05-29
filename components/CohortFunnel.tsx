@@ -59,7 +59,7 @@ function MotionCard({ d, cls }: { d: MotionMetrics; cls: "old" | "new" }) {
       </div>
 
       <div className="sdiv">Progression</div>
-      <FBar color={cls} pctVal={100} name="Enrolled" stat={n.toLocaleString()} />
+      <FBar color={cls} pctVal={100} name="Enrolled in Sequence" stat={n.toLocaleString()} />
       <FBar
         color={cls}
         pctVal={d.enroll_to_meeting_pct}

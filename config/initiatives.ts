@@ -39,6 +39,7 @@ export interface Initiative {
   primaryMetrics?: string[];
   baseline?: Baseline;
   notYetLaunched?: boolean;
+  meetingAfterEntryOnly?: boolean;
 }
 
 export const INITIATIVES: Initiative[] = [
@@ -68,6 +69,7 @@ export const INITIATIVES: Initiative[] = [
     name: "Missed Zoom Call",
     entryStageId: "28817239",
     entryProperty: "hs_v2_date_entered_28817239",
+    meetingAfterEntryOnly: true, // only count rebooked meetings (zoom date AFTER missed zoom date)
     oldMotion: {
       label: "Old process",
       dateFrom: "2026-01-01",

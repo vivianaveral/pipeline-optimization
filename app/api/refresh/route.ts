@@ -86,7 +86,8 @@ async function handleInitiative(token: string, id: string, req: NextRequest) {
         oldTo,
         newFrom,
         initiative.newMotion.maturityDays ?? 42,
-        newTo
+        newTo,
+        initiative.meetingAfterEntryOnly
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -175,7 +176,9 @@ async function handleAll(token: string) {
         initiative.oldMotion.dateFrom,
         oldTo,
         newFrom,
-        initiative.newMotion.maturityDays ?? 42
+        initiative.newMotion.maturityDays ?? 42,
+        undefined,
+        initiative.meetingAfterEntryOnly
       );
     } catch (err) {
       console.error(`[refresh] Initiative ${initiative.id} failed:`, err);

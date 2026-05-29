@@ -31,24 +31,57 @@ export default function WeeklyChart({ old, newData }: Props) {
       const oldRates = oldWeekly.map((w) => (w.enrolled > 0 ? +(( w.meetings / w.enrolled) * 100).toFixed(1) : 0));
       const newRates = newWeekly.map((w) => (w.enrolled > 0 ? +((w.meetings / w.enrolled) * 100).toFixed(1) : 0));
 
+      // Fade bars where n<20 (low sample size)
+      const LOW_N = 20;
+      const oldBgs = oldWeekly.map((w) => w.enrolled < LOW_N ? "#2563eb0d" : "#2563eb22");
+      const newBgs = newWeekly.map((w) => w.enrolled < LOW_N ? "#0596690d" : "#05966922");
+      const oldBorders = oldWeekly.map((w) => w.enrolled < LOW_N ? "#2563eb66" : "#2563eb");
+      const newBorders = newWeekly.map((w) => w.enrolled < LOW_N ? "#05966966" : "#059669");
+
+      // Inline plugin: draw n= label above each bar, red warning for n<20
+      const nLabelPlugin = {
+        id: "nLabels",
+        afterDatasetsDraw(chart: InstanceType<typeof Chart>) {
+          const ctx2 = chart.ctx;
+          [0, 1].forEach((dsIdx) => {
+            const meta = chart.getDatasetMeta(dsIdx);
+            const weeks = dsIdx === 0 ? oldWeekly : newWeekly;
+            meta.data.forEach((bar, barIdx) => {
+              const wIdx = dsIdx === 0 ? barIdx : barIdx - oldWeekly.length;
+              const w = weeks[wIdx];
+              if (!w || w.enrolled === 0) return;
+              const lowN = w.enrolled < LOW_N;
+              const txt = lowN ? `n=${w.enrolled} ⚠` : `n=${w.enrolled}`;
+              ctx2.save();
+              ctx2.font = "bold 8px sans-serif";
+              ctx2.fillStyle = lowN ? "#dc2626" : "#6b7280";
+              ctx2.textAlign = "center";
+              ctx2.fillText(txt, bar.x, bar.y - 3);
+              ctx2.restore();
+            });
+          });
+        },
+      };
+
       chartRef.current = new Chart(canvasRef.current!, {
         type: "bar",
+        plugins: [nLabelPlugin],
         data: {
           labels: allLabels,
           datasets: [
             {
               label: "Old %",
               data: [...oldRates, ...new Array(newWeekly.length).fill(null)],
-              backgroundColor: "#2563eb22",
-              borderColor: "#2563eb",
+              backgroundColor: [...oldBgs, ...new Array(newWeekly.length).fill(null)] as string[],
+              borderColor: [...oldBorders, ...new Array(newWeekly.length).fill(null)] as string[],
               borderWidth: 1.5,
               borderRadius: 3,
             },
             {
               label: "New %",
               data: [...new Array(oldWeekly.length).fill(null), ...newRates],
-              backgroundColor: "#05966922",
-              borderColor: "#059669",
+              backgroundColor: [...new Array(oldWeekly.length).fill(null), ...newBgs] as string[],
+              borderColor: [...new Array(oldWeekly.length).fill(null), ...newBorders] as string[],
               borderWidth: 1.5,
               borderRadius: 3,
             },
@@ -89,7 +122,8 @@ export default function WeeklyChart({ old, newData }: Props) {
                   const idx = isOld ? ctx.dataIndex : ctx.dataIndex - oldWeekly.length;
                   const w = weeks[idx];
                   if (!w) return `${ctx.dataset.label}: ${ctx.formattedValue}%`;
-                  return `${ctx.formattedValue}% (n=${w.enrolled}) · ${w.meetings}/${w.enrolled}`;
+                  const flag = w.enrolled < LOW_N ? " ⚠ low sample" : "";
+                  return `${ctx.formattedValue}% (n=${w.enrolled}) · ${w.meetings}/${w.enrolled}${flag}`;
                 },
               },
             },

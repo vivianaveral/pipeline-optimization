@@ -140,7 +140,8 @@ function aggregateDeals(
   deals: HubSpotDeal[],
   entryProperty: string,
   maturityDays: number,
-  motionDateFrom: string
+  motionDateFrom: string,
+  meetingAfterEntryOnly = false
 ): MotionMetrics {
   const enrolled = deals.length;
   let meetings = 0;
@@ -165,10 +166,12 @@ function aggregateDeals(
     }
 
     const hasZoom = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`];
-    if (hasZoom) {
+    const zoomCounts = hasZoom && (!meetingAfterEntryOnly || !entryDateStr ||
+      new Date(hasZoom) > new Date(entryDateStr));
+    if (zoomCounts) {
       meetings++;
       if (entryDate) {
-        const week = getISOWeekLabel(new Date(hasZoom));
+        const week = getISOWeekLabel(new Date(hasZoom!));
         if (!weekMap[week]) weekMap[week] = { enrolled: 0, meetings: 0 };
         weekMap[week].meetings++;
       }
@@ -240,7 +243,8 @@ export async function fetchInitiativeData(
   oldTo: string,
   newFrom: string,
   maturityDays: number,
-  newTo?: string // optional — supplied when a period filter caps the new motion window
+  newTo?: string, // optional — supplied when a period filter caps the new motion window
+  meetingAfterEntryOnly?: boolean
 ): Promise<{ old: MotionMetrics; new: MotionMetrics }> {
   const exclusionFilter = getExclusionFilter();
 
@@ -280,18 +284,34 @@ export async function fetchInitiativeData(
   });
 
   return {
-    old: aggregateDeals(oldDeals, entryProperty, maturityDays, oldFrom),
-    new: aggregateDeals(newDeals, entryProperty, maturityDays, newFrom),
+    old: aggregateDeals(oldDeals, entryProperty, maturityDays, oldFrom, meetingAfterEntryOnly),
+    new: aggregateDeals(newDeals, entryProperty, maturityDays, newFrom, meetingAfterEntryOnly),
   };
 }
 
 export interface HolisticMonthData {
   lead: number;
+  enrolled_in_seq: number;
   zoom_booked: number;
   pipeline_entered: number;
+  recruiting: number;
+  resumes_sent: number;
+  interview_scheduled: number;
+  agreement_sent: number;
   active_client: number;
+  closed_lost_total: number;
   cl_never_met: number;
   cl_booked_no_place: number;
+  // per-stage CL counts for Pipeline Leak Analysis
+  cl_from_lead: number;
+  cl_from_enrolled: number;
+  cl_from_zoom: number;
+  cl_from_pipeline: number;
+  cl_from_recruiting: number;
+  cl_from_resumes: number;
+  cl_from_interview: number;
+  cl_from_agreement: number;
+  cl_from_active: number;
 }
 
 export async function fetchHolisticFunnel(
@@ -334,23 +354,76 @@ export async function fetchHolisticFunnel(
       limit: 200,
     });
 
-    let zoom = 0, pb = 0, active = 0, cl_never = 0, cl_placed = 0;
+    let zoom = 0, enrolledInSeq = 0, pb = 0, recruiting = 0, resumesSent = 0;
+    let interviewSched = 0, agreementSent = 0, active = 0;
+    let cl_never = 0, cl_placed = 0, cl_total = 0;
+    let cl_lead = 0, cl_enrolled = 0, cl_zoom = 0, cl_pb = 0;
+    let cl_rec = 0, cl_res = 0, cl_int = 0, cl_agr = 0, cl_act = 0;
+
     for (const deal of deals) {
-      if (deal.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`]) zoom++;
-      if (getPostBillingDate(deal)) pb++;
-      if (deal.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`]) active++;
+      const hasCL = !!(
+        deal.properties[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`] ||
+        deal.properties[`hs_v2_date_entered_${STAGE_IDS.DO_NOT_CONTACT}`]
+      );
+
+      const hasEnrolled = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ENROLLED_IN_SEQUENCE}`];
+      const hasZoom     = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`];
+      const pbDate      = getPostBillingDate(deal);
+      const hasActive   = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
+      const hasRec      = deal.properties[`hs_v2_date_entered_${STAGE_IDS.RECRUITING}`];
+      const hasRes      = deal.properties[`hs_v2_date_entered_${STAGE_IDS.RESUMES_SENT}`];
+      const hasInt      = deal.properties[`hs_v2_date_entered_${STAGE_IDS.INTERVIEW_SCHEDULED}`];
+      const hasAgr      = deal.properties[`hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`];
+
+      if (hasEnrolled) enrolledInSeq++;
+      if (hasZoom) zoom++;
+      if (pbDate) pb++;
+      if (hasRec) recruiting++;
+      if (hasRes) resumesSent++;
+      if (hasInt) interviewSched++;
+      if (hasAgr) agreementSent++;
+      if (hasActive) active++;
+
       const clType = classifyClosedLost(deal);
       if (clType === "cl_never_met") cl_never++;
       else if (clType === "cl_booked_no_pipeline" || clType === "cl_pipeline_no_place") cl_placed++;
+
+      if (hasCL) {
+        cl_total++;
+        cl_lead++;
+        if (hasEnrolled) cl_enrolled++;
+        if (hasZoom)     cl_zoom++;
+        if (pbDate)      cl_pb++;
+        if (hasRec)      cl_rec++;
+        if (hasRes)      cl_res++;
+        if (hasInt)      cl_int++;
+        if (hasAgr)      cl_agr++;
+        if (hasActive)   cl_act++;
+      }
     }
 
     results[key] = {
       lead: deals.length,
+      enrolled_in_seq: enrolledInSeq,
       zoom_booked: zoom,
       pipeline_entered: pb,
+      recruiting,
+      resumes_sent: resumesSent,
+      interview_scheduled: interviewSched,
+      agreement_sent: agreementSent,
       active_client: active,
+      closed_lost_total: cl_total,
       cl_never_met: cl_never,
       cl_booked_no_place: cl_placed,
+      cl_from_lead: cl_lead,
+      cl_from_enrolled: cl_enrolled,
+      cl_from_zoom: cl_zoom,
+      cl_from_pipeline: cl_pb,
+      cl_from_recruiting: cl_rec,
+      cl_from_resumes: cl_res,
+      cl_from_interview: cl_int,
+      cl_from_agreement: cl_agr,
+      cl_from_active: cl_act,
     };
   }
 

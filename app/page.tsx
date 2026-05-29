@@ -105,6 +105,9 @@ export default function HomePage() {
   const [customTo, setCustomTo]     = useState("");
 
   const periodInitRef = useRef(false);
+  // Refs always pointing to latest values — avoids stale-closure bug in period effect
+  const handleRefreshRef = useRef<(tabId?: string, overridePeriod?: Period) => Promise<void>>(() => Promise.resolve());
+  const activeTabRef = useRef(activeTab);
 
   // ─── Load server cache on mount ──────────────────────────────────────────────
   const loadCache = useCallback(async () => {
@@ -186,11 +189,15 @@ export default function HomePage() {
     }
   }, [activeTab, period, customFrom, customTo, fetchInitiative, loadCache]);
 
+  // Keep refs current on every render so the period effect never has a stale closure
+  handleRefreshRef.current = handleRefresh;
+  activeTabRef.current = activeTab;
+
   // Auto-fetch when period changes (skip first render).
   useEffect(() => {
     if (!periodInitRef.current) { periodInitRef.current = true; return; }
     if (period === "custom" && (!customFrom || !customTo)) return;
-    handleRefresh(activeTab, period);
+    handleRefreshRef.current(activeTabRef.current, period);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period, customFrom, customTo]);
 
