@@ -420,9 +420,11 @@ export async function fetchHolisticFunnel(
   const results: Record<string, HolisticMonthData> = {};
   const exclusionFilter = getExclusionFilter();
 
-  // Fix 1: build prior-placement map ONCE before the month loop
-  const priorMap = await buildPriorPlacementMap(token, exclusionFilter);
-  await sleep(PAGE_DELAY_MS);
+  // NOTE: buildPriorPlacementMap is intentionally NOT called here.
+  // The holistic refresh runs 5 queries × 6 months = 30 HubSpot calls.
+  // Adding the prior-placement pre-query + associations overhead on every
+  // deal pushes the total past Railway's 60 s maxDuration. The new-leads
+  // filter is applied in fetchInitiativeData (per-initiative, smaller scope).
 
   const baseFilters = [
     { propertyName: "pipeline", operator: "EQ", value: "default" },
@@ -436,15 +438,14 @@ export async function fetchHolisticFunnel(
     const from  = `${year}-${month}-01`;
     const lastDay = new Date(year, d.getMonth() + 1, 0).getDate();
     const to    = `${year}-${month}-${String(lastDay).padStart(2, "0")}`;
-    const toFull = toEndOfDay(to); // inclusive end-of-day for BETWEEN (Fix 2)
+    const toFull = toEndOfDay(to);
     const key   = `${year}-${month}`;
 
-    // Fix 2: log exact date params sent to HubSpot for every query
-    console.log(`[holistic] ${key} | from=${from} | to=${to} | toFull=${toFull}`);
+    console.log(`[holistic] ${key} | from=${from} | toFull=${toFull}`);
 
-    // ── Query A: cohort (pipeline=default, lead entry in month, new leads only) ──
-    console.log(`[holistic] ${key} Query A — lead cohort: hs_v2_date_entered_appointmentscheduled BETWEEN ${from} AND ${toFull}`);
-    const allDeals = await fetchAllDeals(token, {
+    // ── Query A: cohort (pipeline=default, lead entry in month) ──
+    console.log(`[holistic] ${key} Query A — lead cohort BETWEEN ${from} AND ${toFull}`);
+    const deals = await fetchAllDeals(token, {
       filterGroups: [
         {
           filters: [
@@ -454,16 +455,14 @@ export async function fetchHolisticFunnel(
         },
       ],
       properties: DEAL_PROPERTIES,
-      associations: ["contacts"],
       limit: 200,
     });
-    const deals = allDeals.filter((deal) => isNewLead(deal, priorMap));
-    console.log(`[holistic] ${key} Query A: ${allDeals.length} total → ${deals.length} new-lead deals`);
+    console.log(`[holistic] ${key} Query A: ${deals.length} deals`);
     await sleep(PAGE_DELAY_MS);
 
-    // ── Query B: zoom booked in month, any pipeline, new leads only ──
-    console.log(`[holistic] ${key} Query B — sp_zoom: hs_v2_date_entered_13542462 BETWEEN ${from} AND ${toFull}`);
-    const allZoomDeals = await fetchAllDeals(token, {
+    // ── Query B: zoom booked in month, any pipeline ──
+    console.log(`[holistic] ${key} Query B — sp_zoom BETWEEN ${from} AND ${toFull}`);
+    const zoomDeals = await fetchAllDeals(token, {
       filterGroups: [{
         filters: [
           { propertyName: `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, operator: "BETWEEN", value: from, highValue: toFull },
@@ -471,15 +470,13 @@ export async function fetchHolisticFunnel(
         ],
       }],
       properties: DEAL_PROPERTIES,
-      associations: ["contacts"],
       limit: 200,
     });
-    const zoomDeals = allZoomDeals.filter((deal) => isNewLead(deal, priorMap));
-    console.log(`[holistic] ${key} Query B: ${allZoomDeals.length} total → ${zoomDeals.length} new-lead deals`);
+    console.log(`[holistic] ${key} Query B: ${zoomDeals.length} deals`);
     await sleep(PAGE_DELAY_MS);
 
-    // ── Query C: any post-billing stage entered in month, any pipeline, new leads only ──
-    console.log(`[holistic] ${key} Query C — sp_closed_won: post-billing stages BETWEEN ${from} AND ${toFull}`);
+    // ── Query C: any post-billing stage entered in month, any pipeline ──
+    console.log(`[holistic] ${key} Query C — sp_closed_won BETWEEN ${from} AND ${toFull}`);
     const allPbDeals = await fetchAllDeals(token, {
       filterGroups: POST_BILLING_STAGES.map((stageId) => ({
         filters: [
@@ -488,16 +485,15 @@ export async function fetchHolisticFunnel(
         ],
       })),
       properties: DEAL_PROPERTIES,
-      associations: ["contacts"],
       limit: 200,
     });
-    const pbInMonthDeals = allPbDeals.filter((deal) => isNewLead(deal, priorMap));
-    console.log(`[holistic] ${key} Query C: ${allPbDeals.length} total → ${pbInMonthDeals.length} new-lead deals`);
+    const pbInMonthDeals = allPbDeals;
+    console.log(`[holistic] ${key} Query C: ${pbInMonthDeals.length} deals`);
     await sleep(PAGE_DELAY_MS);
 
-    // ── Query D: active client placed in month, any pipeline, new leads only ──
-    console.log(`[holistic] ${key} Query D — sp_active_client: hs_v2_date_entered_12751919 BETWEEN ${from} AND ${toFull}`);
-    const allActiveDeals = await fetchAllDeals(token, {
+    // ── Query D: active client placed in month, any pipeline ──
+    console.log(`[holistic] ${key} Query D — sp_active_client BETWEEN ${from} AND ${toFull}`);
+    const activeDeals = await fetchAllDeals(token, {
       filterGroups: [{
         filters: [
           { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "BETWEEN", value: from, highValue: toFull },
@@ -505,16 +501,14 @@ export async function fetchHolisticFunnel(
         ],
       }],
       properties: DEAL_PROPERTIES,
-      associations: ["contacts"],
       limit: 200,
     });
-    const activeDeals = allActiveDeals.filter((deal) => isNewLead(deal, priorMap));
-    console.log(`[holistic] ${key} Query D: ${allActiveDeals.length} total → ${activeDeals.length} new-lead deals`);
+    console.log(`[holistic] ${key} Query D: ${activeDeals.length} deals`);
     await sleep(PAGE_DELAY_MS);
 
-    // ── Query E: closed lost in month, any pipeline, new leads only ──
-    console.log(`[holistic] ${key} Query E — sp_closed_lost: hs_v2_date_entered_28817241 BETWEEN ${from} AND ${toFull}`);
-    const allClDeals = await fetchAllDeals(token, {
+    // ── Query E: closed lost in month, any pipeline ──
+    console.log(`[holistic] ${key} Query E — sp_closed_lost BETWEEN ${from} AND ${toFull}`);
+    const clDeals = await fetchAllDeals(token, {
       filterGroups: [{
         filters: [
           { propertyName: `hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`, operator: "BETWEEN", value: from, highValue: toFull },
@@ -522,11 +516,9 @@ export async function fetchHolisticFunnel(
         ],
       }],
       properties: DEAL_PROPERTIES,
-      associations: ["contacts"],
       limit: 200,
     });
-    const clDeals = allClDeals.filter((deal) => isNewLead(deal, priorMap));
-    console.log(`[holistic] ${key} Query E: ${allClDeals.length} total → ${clDeals.length} new-lead deals`);
+    console.log(`[holistic] ${key} Query E: ${clDeals.length} deals`);
     await sleep(PAGE_DELAY_MS);
 
     // ── Aggregate cohort (Query A) ──
