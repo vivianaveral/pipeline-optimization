@@ -2,20 +2,22 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { INITIATIVES, type Initiative } from "@/config/initiatives";
 import type { CacheData } from "@/lib/cache";
-import type { MotionMetrics, HolisticMonthData } from "@/lib/hubspot";
+import type { HolisticMonthData } from "@/lib/hubspot";
 import ExclusionsPanel from "@/components/ExclusionsPanel";
-import InitiativeView from "@/components/InitiativeView";
+import MonthlyOutcomes from "@/components/MonthlyOutcomes";
+import TopOfFunnel from "@/components/TopOfFunnel";
+import LeakMap from "@/components/LeakMap";
+import InitiativeScorecards from "@/components/InitiativeScorecard";
+import ROIModule from "@/components/ROIModule";
+import type { MotionMetrics } from "@/lib/hubspot";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Period = "all" | "this_month" | "last_month" | "this_q" | "last_q" | "custom";
 interface PeriodDates { from: string; to: string }
-interface EffectiveDates {
-  oldFrom: string; oldTo: string;
-  newFrom: string; newTo?: string;
-}
+interface EffectiveDates { oldFrom: string; oldTo: string; newFrom: string; newTo?: string; }
 
-// ─── AU FY quarter helpers (Q1 Jul–Sep, Q2 Oct–Dec, Q3 Jan–Mar, Q4 Apr–Jun) ──
+// ─── AU FY quarter helpers ────────────────────────────────────────────────────
 
 function toDateStr(d: Date) { return d.toISOString().split("T")[0]; }
 
@@ -46,7 +48,6 @@ function getPeriodDates(period: Period, customFrom: string, customTo: string): P
   return null;
 }
 
-// Calendar months covered by the active period — used to scope the holistic funnel.
 function getMonthsInPeriod(period: Period, customFrom: string, customTo: string): string[] | null {
   const dates = getPeriodDates(period, customFrom, customTo);
   if (!dates) return null;
@@ -60,7 +61,6 @@ function getMonthsInPeriod(period: Period, customFrom: string, customTo: string)
   return months;
 }
 
-// Intersect period window with initiative config dates.
 function getEffectiveDates(ini: Initiative, period: PeriodDates | null): EffectiveDates | null {
   const today = toDateStr(new Date());
   const configOldFrom = ini.oldMotion.dateFrom;
@@ -74,8 +74,6 @@ function getEffectiveDates(ini: Initiative, period: PeriodDates | null): Effecti
     newTo:   period.to,
   };
 }
-
-// ─── Empty metric shape ───────────────────────────────────────────────────────
 
 function emptyMetrics(maturityDays = 42): MotionMetrics {
   return {
@@ -95,8 +93,6 @@ export default function HomePage() {
   const [loading, setLoading]             = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
   const [errorMsg, setErrorMsg]           = useState<string | null>(null);
-
-  // Holistic data lives in its OWN state slice — never cleared by initiative refreshes.
   const [holisticData, setHolisticData]   = useState<Record<string, HolisticMonthData>>({});
 
   // Period filter
@@ -104,12 +100,16 @@ export default function HomePage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo]     = useState("");
 
-  const periodInitRef = useRef(false);
-  // Refs always pointing to latest values — avoids stale-closure bug in period effect
-  const handleRefreshRef = useRef<(tabId?: string, overridePeriod?: Period) => Promise<void>>(() => Promise.resolve());
-  const activeTabRef = useRef(activeTab);
+  // Dashboard UI state
+  const [selectedMonth, setSelectedMonth] = useState<string>("");
+  const [expandedId, setExpandedId]       = useState<string | null>(null);
+  const [roiOpen, setRoiOpen]             = useState(false);
 
-  // ─── Load server cache on mount ──────────────────────────────────────────────
+  const periodInitRef   = useRef(false);
+  const handleRefreshRef = useRef<(tabId?: string, overridePeriod?: Period) => Promise<void>>(() => Promise.resolve());
+  const activeTabRef    = useRef(activeTab);
+
+  // ─── Load cache on mount ──────────────────────────────────────────────────
   const loadCache = useCallback(async () => {
     try {
       const res = await fetch("/api/data");
@@ -117,17 +117,16 @@ export default function HomePage() {
         const data: CacheData = await res.json();
         setCacheData(data);
         setLastRefreshed(data.refreshed_at);
-        // Populate holistic state from cache independently
         if (data.holistic && Object.keys(data.holistic).length > 0) {
           setHolisticData(data.holistic);
         }
       }
-    } catch { /* cache miss on first load — fine */ }
+    } catch { /* cache miss on first load */ }
   }, []);
 
   useEffect(() => { loadCache(); }, [loadCache]);
 
-  // ─── Fetch helpers ────────────────────────────────────────────────────────────
+  // ─── Fetch helpers ────────────────────────────────────────────────────────
   const fetchInitiative = useCallback(async (tabId: string, effectiveDates: EffectiveDates | null) => {
     const url = new URL("/api/refresh", window.location.origin);
     url.searchParams.set("step", tabId);
@@ -146,7 +145,7 @@ export default function HomePage() {
     return json;
   }, []);
 
-  // ─── Refresh handler ──────────────────────────────────────────────────────────
+  // ─── Refresh handler ──────────────────────────────────────────────────────
   const handleRefresh = useCallback(async (tabId = activeTab, overridePeriod?: Period) => {
     const ini = INITIATIVES.find((i) => i.id === tabId)!;
     const activePeriod = overridePeriod ?? period;
@@ -157,7 +156,6 @@ export default function HomePage() {
     setErrorMsg(null);
 
     try {
-      // Fetch initiative and holistic in parallel
       const [json, holisticRes] = await Promise.all([
         fetchInitiative(tabId, effective),
         fetch("/api/refresh?step=holistic", { method: "POST" }).then(r => r.json()).catch(() => null),
@@ -170,15 +168,13 @@ export default function HomePage() {
           holistic: prev?.holistic ?? {},
         }));
         setLastRefreshed(new Date().toISOString());
-
         if (json.cache_written === false) {
-          setErrorMsg("Data loaded but cache write failed — data will reset on next page load. Check Railway logs.");
+          setErrorMsg("Data loaded but cache write failed — data resets on next page load.");
         }
       } else {
         await loadCache();
       }
 
-      // Update holistic state from parallel fetch result
       if (holisticRes?.data) {
         setHolisticData(holisticRes.data as Record<string, HolisticMonthData>);
       }
@@ -189,11 +185,11 @@ export default function HomePage() {
     }
   }, [activeTab, period, customFrom, customTo, fetchInitiative, loadCache]);
 
-  // Keep refs current on every render so the period effect never has a stale closure
+  // Keep refs current
   handleRefreshRef.current = handleRefresh;
   activeTabRef.current = activeTab;
 
-  // Auto-fetch when period changes (skip first render).
+  // Auto-fetch when period changes
   useEffect(() => {
     if (!periodInitRef.current) { periodInitRef.current = true; return; }
     if (period === "custom" && (!customFrom || !customTo)) return;
@@ -201,134 +197,188 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period, customFrom, customTo]);
 
-  // ─── Derived values ───────────────────────────────────────────────────────────
-  const initiative     = INITIATIVES.find((i) => i.id === activeTab)!;
-  const initiativeData = cacheData?.initiatives?.[activeTab];
-  const old     = initiativeData?.old ?? emptyMetrics(initiative.newMotion.maturityDays);
-  const newData = initiativeData?.new ?? emptyMetrics(initiative.newMotion.maturityDays);
+  // ─── Derived values ───────────────────────────────────────────────────────
+  const periodDates  = getPeriodDates(period, customFrom, customTo);
+  const periodMonths = getMonthsInPeriod(period, customFrom, customTo);
 
-  const periodDates    = getPeriodDates(period, customFrom, customTo);
-  const effectiveDates = getEffectiveDates(initiative, periodDates);
-  const periodMonths   = getMonthsInPeriod(period, customFrom, customTo);
+  // Valid months for holistic sections
+  const allHolisticMonths = Object.keys(holisticData).sort().reverse();
+  const validMonths = periodMonths
+    ? allHolisticMonths.filter((m) => periodMonths.includes(m))
+    : allHolisticMonths;
 
-  const hasData     = !!initiativeData;
+  // Auto-select most recent valid month
+  useEffect(() => {
+    if (validMonths.length > 0 && !validMonths.includes(selectedMonth)) {
+      setSelectedMonth(validMonths[0]);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [validMonths.join(","), selectedMonth]);
+
+  const holisticMonth = selectedMonth || validMonths[0] || "";
+  const d = holisticData[holisticMonth] ?? null;
+
+  // Active initiative for ROI section
+  const activeIni  = INITIATIVES.find((i) => i.id === activeTab)!;
+  const activeData = cacheData?.initiatives?.[activeTab];
+  const roiOld     = activeData?.old ?? emptyMetrics(activeIni.newMotion.maturityDays);
+  const roiNew     = activeData?.new ?? emptyMetrics(activeIni.newMotion.maturityDays);
+
   const refreshedAt = lastRefreshed
     ? new Date(lastRefreshed).toLocaleString("en-AU", { timeZone: "Asia/Singapore" }) + " SGT"
     : null;
 
-  const periodLabel = period === "all"        ? "All data"
-    : period === "this_month" ? "This month"
-    : period === "last_month" ? "Last month"
-    : period === "this_q"     ? "This quarter (AU FY)"
-    : period === "last_q"     ? "Last quarter (AU FY)"
-    : customFrom && customTo  ? `${customFrom} – ${customTo}`
-    : "Custom range";
+  // Toggle scorecard expand — also switch active tab for ROI context
+  function handleToggle(id: string) {
+    const next = expandedId === id ? null : id;
+    setExpandedId(next);
+    if (next) setActiveTab(next);
+  }
 
-  // ─── Render ───────────────────────────────────────────────────────────────────
+  // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="wrap">
 
-      {/* ── Header card ── */}
-      <div className="card">
-
-        {/* Row 1: title + refresh button */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
+      {/* ── S1: Header ── */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
           <div>
-            <p style={{ fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>BruntWork · Internal</p>
-            <h1>Sales Initiative KPI Tracker</h1>
+            <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, marginBottom: 2 }}>
+              BruntWork · Internal · Sales Initiative KPI Tracker
+            </div>
+            <h1>Sales Initiative Tracker</h1>
           </div>
-          <button className="btn primary" onClick={() => handleRefresh()} disabled={loading}>
+          <button className="btn primary" onClick={() => handleRefresh(activeTab)} disabled={loading}>
             {loading ? "⟳ Refreshing…" : `↻ Refresh Initiative ${activeTab}`}
           </button>
         </div>
 
-        {/* Row 2: period filter — its own clearly visible row */}
-        <div style={{
-          display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10,
-          marginTop: 12, paddingTop: 12,
-          borderTop: "1px solid var(--border)",
-        }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", minWidth: 46 }}>Period</span>
+        {/* Period filter */}
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)" }}>Period</span>
           <select
             value={period}
             onChange={(e) => { setErrorMsg(null); setPeriod(e.target.value as Period); }}
-            style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--card)", color: "var(--text)" }}
           >
             <option value="all">All data</option>
             <option value="this_month">This month</option>
             <option value="last_month">Last month</option>
-            <option value="this_q">This quarter (AU FY Q1=Jul–Sep, Q2=Oct–Dec, Q3=Jan–Mar, Q4=Apr–Jun)</option>
+            <option value="this_q">This quarter (AU FY)</option>
             <option value="last_q">Last quarter (AU FY)</option>
             <option value="custom">Custom date range</option>
           </select>
           {period === "custom" && (
             <>
-              <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
-                style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)" }} />
+              <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
               <span style={{ color: "var(--muted)", fontSize: 11 }}>–</span>
-              <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
-                style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)" }} />
+              <input type="date" value={customTo}   onChange={(e) => setCustomTo(e.target.value)} />
             </>
-          )}
-          {period !== "all" && (
-            <span style={{ fontSize: 11, color: "var(--old)", fontWeight: 500 }}>
-              Filters both cohort funnels + holistic funnel
-            </span>
           )}
         </div>
 
-        {/* Row 3: initiative nav tabs */}
+        {/* Initiative tabs */}
         <div className="nav-tabs">
           {INITIATIVES.map((ini) => (
             <button key={ini.id}
               className={`nav-tab ${activeTab === ini.id ? "active" : ""}`}
-              onClick={() => setActiveTab(ini.id)}
-            >
+              onClick={() => setActiveTab(ini.id)}>
               {ini.id}. {ini.name}
-              {ini.notYetLaunched && <span style={{ marginLeft: 5, fontSize: 9, opacity: 0.7 }}>BASELINE</span>}
+              {ini.notYetLaunched && <span style={{ marginLeft: 5, fontSize: 9, opacity: .7 }}>BASELINE</span>}
             </button>
           ))}
         </div>
       </div>
 
-      {/* ── Status bar ── */}
+      {/* Status bar */}
       <div className="status">
-        <div className={`dot ${loading ? "loading" : hasData ? "" : "error"}`} />
-        <span style={{ color: "var(--muted)" }}>
+        <div className={`dot ${loading ? "loading" : ""}`} />
+        <span>
           {loading
-            ? `Fetching Initiative ${activeTab} from HubSpot… (${periodLabel})`
-            : hasData
-            ? `Initiative ${activeTab} · ${periodLabel}${refreshedAt ? ` · ${refreshedAt}` : ""}`
+            ? `Refreshing Initiative ${activeTab} from HubSpot…`
+            : refreshedAt
+            ? `Last refreshed ${refreshedAt}`
             : "No data — click Refresh to load from HubSpot."}
         </span>
       </div>
 
-      {/* ── Error banner ── */}
+      {/* Error banner */}
       {errorMsg && (
         <div className="banner" style={{ background: "var(--dangerl)", borderColor: "#fca5a5", color: "#991b1b", marginBottom: 12 }}>
           <span className="bicon">⚠</span>
           <div style={{ flex: 1 }}><strong>Error</strong><br />{errorMsg}</div>
           <button onClick={() => setErrorMsg(null)}
-            style={{ background: "none", border: "none", cursor: "pointer", color: "#991b1b", fontSize: 16, padding: "0 4px", alignSelf: "flex-start" }}>
-            ✕
-          </button>
+            style={{ background: "none", border: "none", cursor: "pointer", color: "#991b1b", fontSize: 16, padding: "0 4px" }}>✕</button>
         </div>
       )}
 
-      {/* ── Exclusions ── */}
       <ExclusionsPanel />
 
-      {/* ── Initiative content ── */}
-      <InitiativeView
-        key={activeTab}
-        initiative={initiative}
-        old={old}
-        newData={newData}
-        holistic={holisticData}
-        effectiveNewFrom={effectiveDates?.newFrom ?? initiative.newMotion.dateFrom}
-        effectiveNewTo={effectiveDates?.newTo}
-        periodMonths={periodMonths}
+      {/* ── S2: Monthly Outcomes ── */}
+      {d ? (
+        <MonthlyOutcomes
+          d={d}
+          validMonths={validMonths}
+          selectedMonth={holisticMonth}
+          onMonthChange={setSelectedMonth}
+        />
+      ) : (
+        <div className="card" style={{ textAlign: "center", color: "var(--muted)", padding: "28px 20px" }}>
+          <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>No data loaded</div>
+          <div style={{ fontSize: 12 }}>Click ↻ Refresh to pull the latest data from HubSpot.</div>
+        </div>
+      )}
+
+      {/* ── S3: Top of Funnel ── */}
+      {d && <TopOfFunnel d={d} />}
+
+      {/* ── S4: Leak Map ── */}
+      {d && <LeakMap d={d} />}
+
+      {/* ── S5: Initiative Scorecards ── */}
+      <InitiativeScorecards
+        initiatives={INITIATIVES}
+        cacheData={cacheData}
+        expandedId={expandedId}
+        onToggle={handleToggle}
       />
+
+      {/* ── S6: ROI — collapsible ── */}
+      <div style={{ marginTop: 4 }}>
+        <button
+          className={`collapsible-trigger${roiOpen ? " open" : ""}`}
+          onClick={() => setRoiOpen(!roiOpen)}
+          type="button"
+        >
+          <span>Recovery Economics — Initiative {activeTab}</span>
+          <span style={{ fontSize: 16, color: "var(--muted)", fontWeight: 400 }}>{roiOpen ? "▲" : "▼"}</span>
+        </button>
+
+        {roiOpen && (
+          <div className="collapsible-body">
+            {activeData ? (
+              <ROIModule
+                old={roiOld}
+                newData={roiNew}
+                defaultCostOld={activeIni.oldMotion.seqCostPerMeeting}
+                defaultCostNew={activeIni.newMotion.seqCostPerMeeting}
+              />
+            ) : (
+              <p style={{ fontSize: 12, color: "var(--muted)" }}>
+                No data for Initiative {activeTab} yet — click Refresh.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Period filter note ── */}
+      {periodDates && (
+        <div style={{ marginTop: 20, fontSize: 10, color: "var(--muted)", textAlign: "center" }}>
+          Period filter active: {periodDates.from} – {periodDates.to} · Cohort funnels filter by enrollment date.
+          Holistic sections use selected month ({holisticMonth || "none"}).
+        </div>
+      )}
     </div>
   );
 }
