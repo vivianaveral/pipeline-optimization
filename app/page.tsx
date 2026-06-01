@@ -176,12 +176,18 @@ export default function HomePage() {
   // Keep ref current
   handleRefreshAllRef.current = handleRefreshAll;
 
-  // ─── Load cache on mount + auto-fill missing initiatives (Fix 5) ─────────
+  // ─── Load cache on mount; auto-fetch anything missing ───────────────────
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/data");
-        if (!res.ok) return;
+
+        // No cache at all — trigger a full refresh so every section populates
+        if (!res.ok) {
+          await handleRefreshAllRef.current();
+          return;
+        }
+
         const data: CacheData = await res.json();
         setCacheData(data);
         setLastRefreshed(data.refreshed_at);
@@ -189,40 +195,48 @@ export default function HomePage() {
           setHolisticData(data.holistic);
         }
 
-        // Fix 5: auto-refresh any initiative that has no cached data
-        const missing = INITIATIVES.filter(
+        // Determine what's absent from the cache
+        const missingInitiatives = INITIATIVES.filter(
           (ini) => !ini.notYetLaunched && !data.initiatives?.[ini.id]
         );
-        if (missing.length > 0) {
-          setLoading(true);
-          for (const ini of missing) {
-            setLoadingMsg(`Loading Initiative ${ini.id} from HubSpot…`);
-            try {
-              const url = new URL("/api/refresh", window.location.origin);
-              url.searchParams.set("step", ini.id);
-              const r = await fetch(url.toString(), { method: "POST" });
-              const json = await r.json();
-              if (json.data) {
-                setCacheData((prev) => ({
-                  refreshed_at: new Date().toISOString(),
-                  initiatives: { ...(prev?.initiatives ?? {}), [ini.id]: json.data },
-                  holistic: prev?.holistic ?? {},
-                }));
-              }
-            } catch { /* ignore individual failures */ }
-          }
-          // Also fetch holistic if not cached
-          if (!data.holistic || Object.keys(data.holistic).length === 0) {
-            setLoadingMsg("Loading holistic funnel…");
-            const hr = await fetch("/api/refresh?step=holistic", { method: "POST" })
-              .then((r) => r.json()).catch(() => null);
-            if (hr?.data) setHolisticData(hr.data as Record<string, HolisticMonthData>);
-          }
-          setLoading(false);
-          setLoadingMsg("");
-          setLastRefreshed(new Date().toISOString());
+        // Holistic drives Sections 2-4 — always fetch it independently if absent
+        const missingHolistic =
+          !data.holistic || Object.keys(data.holistic).length === 0;
+
+        if (!missingInitiatives.length && !missingHolistic) return; // fully cached
+
+        setLoading(true);
+
+        // Auto-fetch any missing initiative cohorts
+        for (const ini of missingInitiatives) {
+          setLoadingMsg(`Loading Initiative ${ini.id}…`);
+          try {
+            const url = new URL("/api/refresh", window.location.origin);
+            url.searchParams.set("step", ini.id);
+            const r = await fetch(url.toString(), { method: "POST" });
+            const json = await r.json();
+            if (json.data) {
+              setCacheData((prev) => ({
+                refreshed_at: new Date().toISOString(),
+                initiatives: { ...(prev?.initiatives ?? {}), [ini.id]: json.data },
+                holistic: prev?.holistic ?? {},
+              }));
+            }
+          } catch { /* ignore individual failures */ }
         }
-      } catch { /* cache miss on first load */ }
+
+        // Fetch holistic independently — NOT gated on missing initiatives
+        if (missingHolistic) {
+          setLoadingMsg("Loading holistic funnel…");
+          const hr = await fetch("/api/refresh?step=holistic", { method: "POST" })
+            .then((r) => r.json()).catch(() => null);
+          if (hr?.data) setHolisticData(hr.data as Record<string, HolisticMonthData>);
+        }
+
+        setLoading(false);
+        setLoadingMsg("");
+        setLastRefreshed(new Date().toISOString());
+      } catch { /* silently ignore — user can click Refresh All */ }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -359,10 +373,20 @@ export default function HomePage() {
       )}
 
       {/* ── S3: Top of Funnel ── */}
-      {d && <TopOfFunnel d={d} />}
+      {d
+        ? <TopOfFunnel d={d} />
+        : <div className="card" style={{ color: "var(--muted)", fontSize: 12, padding: "14px 20px" }}>
+            Top of funnel — loading…
+          </div>
+      }
 
       {/* ── S4: Leak Map ── */}
-      {d && <LeakMap d={d} />}
+      {d
+        ? <LeakMap d={d} />
+        : <div className="card" style={{ color: "var(--muted)", fontSize: 12, padding: "14px 20px" }}>
+            Leak map — loading…
+          </div>
+      }
 
       {/* ── S5: Initiative Scorecards ── */}
       <InitiativeScorecards
