@@ -2,14 +2,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { INITIATIVES, type Initiative } from "@/config/initiatives";
 import type { CacheData } from "@/lib/cache";
-import type { HolisticMonthData } from "@/lib/hubspot";
+import type { HolisticMonthData, MotionMetrics } from "@/lib/hubspot";
 import ExclusionsPanel from "@/components/ExclusionsPanel";
 import MonthlyOutcomes from "@/components/MonthlyOutcomes";
 import TopOfFunnel from "@/components/TopOfFunnel";
 import LeakMap from "@/components/LeakMap";
 import InitiativeScorecards from "@/components/InitiativeScorecard";
 import ROIModule from "@/components/ROIModule";
-import type { MotionMetrics } from "@/lib/hubspot";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -91,90 +90,78 @@ export default function HomePage() {
   const [activeTab, setActiveTab]         = useState("01");
   const [cacheData, setCacheData]         = useState<CacheData | null>(null);
   const [loading, setLoading]             = useState(false);
+  const [loadingMsg, setLoadingMsg]       = useState("");
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
   const [errorMsg, setErrorMsg]           = useState<string | null>(null);
   const [holisticData, setHolisticData]   = useState<Record<string, HolisticMonthData>>({});
 
-  // Period filter
   const [period, setPeriod]         = useState<Period>("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo]     = useState("");
 
-  // Dashboard UI state
   const [selectedMonth, setSelectedMonth] = useState<string>("");
   const [expandedId, setExpandedId]       = useState<string | null>(null);
   const [roiOpen, setRoiOpen]             = useState(false);
 
-  const periodInitRef   = useRef(false);
-  const handleRefreshRef = useRef<(tabId?: string, overridePeriod?: Period) => Promise<void>>(() => Promise.resolve());
-  const activeTabRef    = useRef(activeTab);
+  const periodInitRef    = useRef(false);
+  const handleRefreshAllRef = useRef<(overridePeriod?: Period) => Promise<void>>(() => Promise.resolve());
 
-  // ─── Load cache on mount ──────────────────────────────────────────────────
-  const loadCache = useCallback(async () => {
-    try {
-      const res = await fetch("/api/data");
-      if (res.ok) {
-        const data: CacheData = await res.json();
-        setCacheData(data);
-        setLastRefreshed(data.refreshed_at);
-        if (data.holistic && Object.keys(data.holistic).length > 0) {
-          setHolisticData(data.holistic);
-        }
-      }
-    } catch { /* cache miss on first load */ }
-  }, []);
-
-  useEffect(() => { loadCache(); }, [loadCache]);
-
-  // ─── Fetch helpers ────────────────────────────────────────────────────────
-  const fetchInitiative = useCallback(async (tabId: string, effectiveDates: EffectiveDates | null) => {
+  // ─── Low-level fetch one initiative ──────────────────────────────────────
+  const fetchInitiative = useCallback(async (ini: Initiative, effective: EffectiveDates | null) => {
     const url = new URL("/api/refresh", window.location.origin);
-    url.searchParams.set("step", tabId);
-    if (effectiveDates) {
-      url.searchParams.set("oldFrom", effectiveDates.oldFrom);
-      url.searchParams.set("oldTo",   effectiveDates.oldTo);
-      url.searchParams.set("newFrom", effectiveDates.newFrom);
-      if (effectiveDates.newTo) url.searchParams.set("newTo", effectiveDates.newTo);
+    url.searchParams.set("step", ini.id);
+    if (effective) {
+      url.searchParams.set("oldFrom", effective.oldFrom);
+      url.searchParams.set("oldTo",   effective.oldTo);
+      url.searchParams.set("newFrom", effective.newFrom);
+      if (effective.newTo) url.searchParams.set("newTo", effective.newTo);
     }
     const res = await fetch(url.toString(), { method: "POST" });
     let json: Record<string, unknown> = {};
     try { json = await res.json(); } catch {
-      throw new Error(`Non-JSON response (HTTP ${res.status}) — check Railway logs.`);
+      throw new Error(`Non-JSON response (HTTP ${res.status})`);
     }
     if (!res.ok) throw new Error((json.error as string) ?? `HTTP ${res.status}`);
     return json;
   }, []);
 
-  // ─── Refresh handler ──────────────────────────────────────────────────────
-  const handleRefresh = useCallback(async (tabId = activeTab, overridePeriod?: Period) => {
-    const ini = INITIATIVES.find((i) => i.id === tabId)!;
+  // ─── Refresh ALL non-baseline initiatives + holistic (Fix 3) ─────────────
+  const handleRefreshAll = useCallback(async (overridePeriod?: Period) => {
     const activePeriod = overridePeriod ?? period;
     const periodDates  = getPeriodDates(activePeriod, customFrom, customTo);
-    const effective    = getEffectiveDates(ini, periodDates);
 
     setLoading(true);
     setErrorMsg(null);
 
     try {
-      const [json, holisticRes] = await Promise.all([
-        fetchInitiative(tabId, effective),
-        fetch("/api/refresh?step=holistic", { method: "POST" }).then(r => r.json()).catch(() => null),
-      ]);
-
-      if (json.data) {
-        setCacheData((prev) => ({
-          refreshed_at: new Date().toISOString(),
-          initiatives: { ...(prev?.initiatives ?? {}), [tabId]: json.data as CacheData["initiatives"][string] },
-          holistic: prev?.holistic ?? {},
-        }));
-        setLastRefreshed(new Date().toISOString());
-        if (json.cache_written === false) {
-          setErrorMsg("Data loaded but cache write failed — data resets on next page load.");
+      // Refresh each non-baseline initiative sequentially
+      for (const ini of INITIATIVES) {
+        if (ini.notYetLaunched) continue;
+        setLoadingMsg(`Refreshing Initiative ${ini.id}…`);
+        const effective = getEffectiveDates(ini, periodDates);
+        try {
+          const json = await fetchInitiative(ini, effective);
+          if (json.data) {
+            setCacheData((prev) => ({
+              refreshed_at: new Date().toISOString(),
+              initiatives: {
+                ...(prev?.initiatives ?? {}),
+                [ini.id]: json.data as CacheData["initiatives"][string],
+              },
+              holistic: prev?.holistic ?? {},
+            }));
+            setLastRefreshed(new Date().toISOString());
+          }
+        } catch (e) {
+          console.warn(`Initiative ${ini.id} refresh failed:`, e);
+          // Continue with next initiative
         }
-      } else {
-        await loadCache();
       }
 
+      // Then refresh holistic
+      setLoadingMsg("Refreshing holistic funnel…");
+      const holisticRes = await fetch("/api/refresh?step=holistic", { method: "POST" })
+        .then((r) => r.json()).catch(() => null);
       if (holisticRes?.data) {
         setHolisticData(holisticRes.data as Record<string, HolisticMonthData>);
       }
@@ -182,32 +169,79 @@ export default function HomePage() {
       setErrorMsg(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(false);
+      setLoadingMsg("");
     }
-  }, [activeTab, period, customFrom, customTo, fetchInitiative, loadCache]);
+  }, [period, customFrom, customTo, fetchInitiative]);
 
-  // Keep refs current
-  handleRefreshRef.current = handleRefresh;
-  activeTabRef.current = activeTab;
+  // Keep ref current
+  handleRefreshAllRef.current = handleRefreshAll;
 
-  // Auto-fetch when period changes
+  // ─── Load cache on mount + auto-fill missing initiatives (Fix 5) ─────────
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/data");
+        if (!res.ok) return;
+        const data: CacheData = await res.json();
+        setCacheData(data);
+        setLastRefreshed(data.refreshed_at);
+        if (data.holistic && Object.keys(data.holistic).length > 0) {
+          setHolisticData(data.holistic);
+        }
+
+        // Fix 5: auto-refresh any initiative that has no cached data
+        const missing = INITIATIVES.filter(
+          (ini) => !ini.notYetLaunched && !data.initiatives?.[ini.id]
+        );
+        if (missing.length > 0) {
+          setLoading(true);
+          for (const ini of missing) {
+            setLoadingMsg(`Loading Initiative ${ini.id} from HubSpot…`);
+            try {
+              const url = new URL("/api/refresh", window.location.origin);
+              url.searchParams.set("step", ini.id);
+              const r = await fetch(url.toString(), { method: "POST" });
+              const json = await r.json();
+              if (json.data) {
+                setCacheData((prev) => ({
+                  refreshed_at: new Date().toISOString(),
+                  initiatives: { ...(prev?.initiatives ?? {}), [ini.id]: json.data },
+                  holistic: prev?.holistic ?? {},
+                }));
+              }
+            } catch { /* ignore individual failures */ }
+          }
+          // Also fetch holistic if not cached
+          if (!data.holistic || Object.keys(data.holistic).length === 0) {
+            setLoadingMsg("Loading holistic funnel…");
+            const hr = await fetch("/api/refresh?step=holistic", { method: "POST" })
+              .then((r) => r.json()).catch(() => null);
+            if (hr?.data) setHolisticData(hr.data as Record<string, HolisticMonthData>);
+          }
+          setLoading(false);
+          setLoadingMsg("");
+          setLastRefreshed(new Date().toISOString());
+        }
+      } catch { /* cache miss on first load */ }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─── Auto-refresh ALL sections when period changes (Fix 3) ───────────────
   useEffect(() => {
     if (!periodInitRef.current) { periodInitRef.current = true; return; }
     if (period === "custom" && (!customFrom || !customTo)) return;
-    handleRefreshRef.current(activeTabRef.current, period);
+    handleRefreshAllRef.current(period);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period, customFrom, customTo]);
 
   // ─── Derived values ───────────────────────────────────────────────────────
-  const periodDates  = getPeriodDates(period, customFrom, customTo);
-  const periodMonths = getMonthsInPeriod(period, customFrom, customTo);
-
-  // Valid months for holistic sections
+  const periodMonths   = getMonthsInPeriod(period, customFrom, customTo);
   const allHolisticMonths = Object.keys(holisticData).sort().reverse();
   const validMonths = periodMonths
     ? allHolisticMonths.filter((m) => periodMonths.includes(m))
     : allHolisticMonths;
 
-  // Auto-select most recent valid month
   useEffect(() => {
     if (validMonths.length > 0 && !validMonths.includes(selectedMonth)) {
       setSelectedMonth(validMonths[0]);
@@ -218,7 +252,6 @@ export default function HomePage() {
   const holisticMonth = selectedMonth || validMonths[0] || "";
   const d = holisticData[holisticMonth] ?? null;
 
-  // Active initiative for ROI section
   const activeIni  = INITIATIVES.find((i) => i.id === activeTab)!;
   const activeData = cacheData?.initiatives?.[activeTab];
   const roiOld     = activeData?.old ?? emptyMetrics(activeIni.newMotion.maturityDays);
@@ -228,7 +261,6 @@ export default function HomePage() {
     ? new Date(lastRefreshed).toLocaleString("en-AU", { timeZone: "Asia/Singapore" }) + " SGT"
     : null;
 
-  // Toggle scorecard expand — also switch active tab for ROI context
   function handleToggle(id: string) {
     const next = expandedId === id ? null : id;
     setExpandedId(next);
@@ -239,7 +271,7 @@ export default function HomePage() {
   return (
     <div className="wrap">
 
-      {/* ── S1: Header ── */}
+      {/* ── S1: Header — period filter + refresh only (tabs removed per layout change) ── */}
       <div className="card" style={{ marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
           <div>
@@ -248,13 +280,17 @@ export default function HomePage() {
             </div>
             <h1>Sales Initiative Tracker</h1>
           </div>
-          <button className="btn primary" onClick={() => handleRefresh(activeTab)} disabled={loading}>
-            {loading ? "⟳ Refreshing…" : `↻ Refresh Initiative ${activeTab}`}
+          <button
+            className="btn primary"
+            onClick={() => handleRefreshAll()}
+            disabled={loading}
+          >
+            {loading ? `⟳ ${loadingMsg || "Refreshing…"}` : "↻ Refresh All"}
           </button>
         </div>
 
         {/* Period filter */}
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)" }}>Period</span>
           <select
             value={period}
@@ -274,18 +310,11 @@ export default function HomePage() {
               <input type="date" value={customTo}   onChange={(e) => setCustomTo(e.target.value)} />
             </>
           )}
-        </div>
-
-        {/* Initiative tabs */}
-        <div className="nav-tabs">
-          {INITIATIVES.map((ini) => (
-            <button key={ini.id}
-              className={`nav-tab ${activeTab === ini.id ? "active" : ""}`}
-              onClick={() => setActiveTab(ini.id)}>
-              {ini.id}. {ini.name}
-              {ini.notYetLaunched && <span style={{ marginLeft: 5, fontSize: 9, opacity: .7 }}>BASELINE</span>}
-            </button>
-          ))}
+          {period !== "all" && !loading && (
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>
+              · All sections updated to this range
+            </span>
+          )}
         </div>
       </div>
 
@@ -294,10 +323,10 @@ export default function HomePage() {
         <div className={`dot ${loading ? "loading" : ""}`} />
         <span>
           {loading
-            ? `Refreshing Initiative ${activeTab} from HubSpot…`
+            ? loadingMsg || "Refreshing from HubSpot…"
             : refreshedAt
             ? `Last refreshed ${refreshedAt}`
-            : "No data — click Refresh to load from HubSpot."}
+            : "No data — click Refresh All to load from HubSpot."}
         </span>
       </div>
 
@@ -325,7 +354,7 @@ export default function HomePage() {
         <div className="card" style={{ textAlign: "center", color: "var(--muted)", padding: "28px 20px" }}>
           <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>No data loaded</div>
-          <div style={{ fontSize: 12 }}>Click ↻ Refresh to pull the latest data from HubSpot.</div>
+          <div style={{ fontSize: 12 }}>Click ↻ Refresh All to pull the latest data from HubSpot.</div>
         </div>
       )}
 
@@ -365,20 +394,12 @@ export default function HomePage() {
               />
             ) : (
               <p style={{ fontSize: 12, color: "var(--muted)" }}>
-                No data for Initiative {activeTab} yet — click Refresh.
+                No data for Initiative {activeTab} yet — click Refresh All.
               </p>
             )}
           </div>
         )}
       </div>
-
-      {/* ── Period filter note ── */}
-      {periodDates && (
-        <div style={{ marginTop: 20, fontSize: 10, color: "var(--muted)", textAlign: "center" }}>
-          Period filter active: {periodDates.from} – {periodDates.to} · Cohort funnels filter by enrollment date.
-          Holistic sections use selected month ({holisticMonth || "none"}).
-        </div>
-      )}
     </div>
   );
 }

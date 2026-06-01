@@ -4,11 +4,15 @@ import { POST_BILLING_STAGES, STAGE_IDS } from "@/config/initiatives";
 const HUBSPOT_BASE = "https://api.hubspot.com/crm/v3/objects/deals/search";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const PAGE_DELAY_MS = 250; // stay well within HubSpot's secondly rate limit
+const PAGE_DELAY_MS = 250;
 
 interface HubSpotDeal {
   id: string;
   properties: Record<string, string | null>;
+  // Present when the query includes associations: ["contacts"]
+  associations?: {
+    contacts?: { results: Array<{ id: string; type: string }> };
+  };
 }
 
 interface SearchQuery {
@@ -24,6 +28,7 @@ interface SearchQuery {
   properties: string[];
   limit: number;
   after?: string;
+  associations?: string[]; // e.g. ["contacts"] — returns contact IDs per deal
 }
 
 const DEAL_PROPERTIES = [
@@ -47,6 +52,8 @@ const DEAL_PROPERTIES = [
   "closedate",
 ];
 
+// ── Exclusion filter ─────────────────────────────────────────────────────────
+
 function getExclusionFilter() {
   if (EXCLUDED_CONTACTS.length === 0) return [];
   return [
@@ -57,6 +64,8 @@ function getExclusionFilter() {
     },
   ];
 }
+
+// ── Pagination ────────────────────────────────────────────────────────────────
 
 async function fetchAllDeals(token: string, query: SearchQuery): Promise<HubSpotDeal[]> {
   const deals: HubSpotDeal[] = [];
@@ -89,12 +98,82 @@ async function fetchAllDeals(token: string, query: SearchQuery): Promise<HubSpot
   return deals;
 }
 
+// ── New-lead filter (Fix 1) ──────────────────────────────────────────────────
+// Exclude deals where the associated contact already had an active placement
+// (hs_v2_date_entered_12751919) on an earlier deal, before this deal's lead date.
+
+/** Contact IDs associated with a deal (requires associations:["contacts"] in query). */
+function getDealContactIds(deal: HubSpotDeal): string[] {
+  return deal.associations?.contacts?.results?.map((c) => c.id) ?? [];
+}
+
+/**
+ * Build a map of contactId → earliest active-client timestamp across all deals.
+ * Called once before the main queries to avoid per-deal lookups.
+ */
+async function buildPriorPlacementMap(
+  token: string,
+  exclusionFilter: ReturnType<typeof getExclusionFilter>
+): Promise<Map<string, number>> {
+  console.log("[hubspot] Building prior-placement map (contacts with prior active client deals)...");
+  const placedDeals = await fetchAllDeals(token, {
+    filterGroups: [
+      {
+        filters: [
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "HAS_PROPERTY" },
+          ...exclusionFilter,
+        ],
+      },
+    ],
+    properties: [`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`],
+    associations: ["contacts"],
+    limit: 200,
+  });
+
+  const map = new Map<string, number>();
+  for (const deal of placedDeals) {
+    const activeStr = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
+    if (!activeStr) continue;
+    const activeTs = new Date(activeStr).getTime();
+    for (const cid of getDealContactIds(deal)) {
+      const prev = map.get(cid);
+      if (prev === undefined || activeTs < prev) map.set(cid, activeTs);
+    }
+  }
+  console.log(`[hubspot] Prior-placement map: ${map.size} contacts with ≥1 prior active client deal`);
+  return map;
+}
+
+/**
+ * Returns true if this deal is a "new lead" — the associated contact had no
+ * active placement on any other deal before this deal's lead-entry date.
+ * Deals with no lead date are included (can't determine, safe to keep).
+ */
+function isNewLead(deal: HubSpotDeal, priorMap: Map<string, number>): boolean {
+  const leadStr = deal.properties[`hs_v2_date_entered_${STAGE_IDS.LEAD}`];
+  if (!leadStr) return true;
+  const leadTs = new Date(leadStr).getTime();
+  for (const cid of getDealContactIds(deal)) {
+    const priorTs = priorMap.get(cid);
+    if (priorTs !== undefined && priorTs < leadTs) return false;
+  }
+  return true;
+}
+
+// ── Date helpers ─────────────────────────────────────────────────────────────
+
+/** Converts "YYYY-MM-DD" to the last millisecond of that day (UTC), for inclusive BETWEEN. */
+function toEndOfDay(dateStr: string): string {
+  return `${dateStr}T23:59:59.999Z`;
+}
+
+// ── Aggregation helpers ───────────────────────────────────────────────────────
+
 function getPostBillingDate(deal: HubSpotDeal): number | null {
   const dates = POST_BILLING_STAGES.map((stageId) => {
     const val = deal.properties[`hs_v2_date_entered_${stageId}`];
     return val ? new Date(val).getTime() : null;
   }).filter((d): d is number => d !== null);
-
   return dates.length > 0 ? Math.min(...dates) : null;
 }
 
@@ -106,15 +185,17 @@ function classifyClosedLost(deal: HubSpotDeal): ClosedLostCategory {
     deal.properties[`hs_v2_date_entered_${STAGE_IDS.DO_NOT_CONTACT}`];
   if (!hasCL) return null;
 
-  const hasZoom = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`];
-  const hasPB = getPostBillingDate(deal);
+  const hasZoom   = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`];
+  const hasPB     = getPostBillingDate(deal);
   const hasActive = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
 
   if (!hasZoom) return "cl_never_met";
-  if (!hasPB) return "cl_booked_no_pipeline";
+  if (!hasPB)   return "cl_booked_no_pipeline";
   if (!hasActive) return "cl_pipeline_no_place";
   return "cl_pipeline_no_place";
 }
+
+// ── MotionMetrics ─────────────────────────────────────────────────────────────
 
 export interface MotionMetrics {
   enrolled: number;
@@ -143,15 +224,11 @@ function aggregateDeals(
   motionDateFrom: string,
   meetingAfterEntryOnly = false
 ): MotionMetrics {
+  // Fix 4: meetingAfterEntryOnly=true for Initiative 02 — only count zoom dates
+  // strictly AFTER the missed-zoom entry date (hs_v2_date_entered_28817239).
   const enrolled = deals.length;
-  let meetings = 0;
-  let pipeline = 0;
-  let active = 0;
-  let terminated = 0;
-  let cl_never = 0;
-  let cl_booked_no_pb = 0;
-  let cl_pb_no_place = 0;
-  let still_open = 0;
+  let meetings = 0, pipeline = 0, active = 0, terminated = 0;
+  let cl_never = 0, cl_booked_no_pb = 0, cl_pb_no_place = 0, still_open = 0;
 
   const weekMap: Record<string, { enrolled: number; meetings: number }> = {};
 
@@ -166,8 +243,10 @@ function aggregateDeals(
     }
 
     const hasZoom = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`];
-    const zoomCounts = hasZoom && (!meetingAfterEntryOnly || !entryDateStr ||
-      new Date(hasZoom) > new Date(entryDateStr));
+    const zoomCounts = hasZoom && (
+      !meetingAfterEntryOnly || !entryDateStr ||
+      new Date(hasZoom) > new Date(entryDateStr)
+    );
     if (zoomCounts) {
       meetings++;
       if (entryDate) {
@@ -187,9 +266,9 @@ function aggregateDeals(
     if (hasTerm) terminated++;
 
     const clType = classifyClosedLost(deal);
-    if (clType === "cl_never_met") cl_never++;
+    if (clType === "cl_never_met")          cl_never++;
     else if (clType === "cl_booked_no_pipeline") cl_booked_no_pb++;
-    else if (clType === "cl_pipeline_no_place") cl_pb_no_place++;
+    else if (clType === "cl_pipeline_no_place")  cl_pb_no_place++;
     else still_open++;
   }
 
@@ -222,9 +301,7 @@ function aggregateDeals(
   };
 }
 
-function round(n: number) {
-  return Math.round(n * 10) / 10;
-}
+function round(n: number) { return Math.round(n * 10) / 10; }
 
 function getISOWeekLabel(date: Date): string {
   const d = new Date(date);
@@ -235,6 +312,8 @@ function getISOWeekLabel(date: Date): string {
   return `${d.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
 }
 
+// ── fetchInitiativeData ───────────────────────────────────────────────────────
+
 export async function fetchInitiativeData(
   token: string,
   initiativeId: string,
@@ -243,45 +322,53 @@ export async function fetchInitiativeData(
   oldTo: string,
   newFrom: string,
   maturityDays: number,
-  newTo?: string, // optional — supplied when a period filter caps the new motion window
+  newTo?: string,
   meetingAfterEntryOnly?: boolean
 ): Promise<{ old: MotionMetrics; new: MotionMetrics }> {
   const exclusionFilter = getExclusionFilter();
+
+  // Fix 1: build prior-placement map once before fetching cohorts
+  const priorMap = await buildPriorPlacementMap(token, exclusionFilter);
+  await sleep(PAGE_DELAY_MS);
 
   const baseFilters = [
     { propertyName: "pipeline", operator: "EQ", value: "default" },
     ...exclusionFilter,
   ];
 
-  // Sequential (not concurrent) to avoid bursting the secondly rate limit
-  const oldDeals = await fetchAllDeals(token, {
+  console.log(`[hubspot] Initiative ${initiativeId}: old BETWEEN ${oldFrom} – ${toEndOfDay(oldTo)}, new ${newFrom}${newTo ? ` – ${toEndOfDay(newTo)}` : "+"}`);
+
+  const oldDeals = (await fetchAllDeals(token, {
     filterGroups: [
       {
         filters: [
-          { propertyName: entryProperty, operator: "BETWEEN", value: oldFrom, highValue: oldTo },
+          { propertyName: entryProperty, operator: "BETWEEN", value: oldFrom, highValue: toEndOfDay(oldTo) },
           ...baseFilters,
         ],
       },
     ],
     properties: DEAL_PROPERTIES,
+    associations: ["contacts"],
     limit: 200,
-  });
+  })).filter((d) => isNewLead(d, priorMap));
+  console.log(`[hubspot] Initiative ${initiativeId}: old cohort ${oldDeals.length} new-lead deals`);
   await sleep(PAGE_DELAY_MS);
 
-  // New motion: open-ended GTE for "all data", BETWEEN when a period cap is supplied
   const newMotionDateFilter = newTo
-    ? { propertyName: entryProperty, operator: "BETWEEN", value: newFrom, highValue: newTo }
+    ? { propertyName: entryProperty, operator: "BETWEEN", value: newFrom, highValue: toEndOfDay(newTo) }
     : { propertyName: entryProperty, operator: "GTE", value: newFrom };
 
-  const newDeals = await fetchAllDeals(token, {
+  const newDeals = (await fetchAllDeals(token, {
     filterGroups: [
       {
         filters: [newMotionDateFilter, ...baseFilters],
       },
     ],
     properties: DEAL_PROPERTIES,
+    associations: ["contacts"],
     limit: 200,
-  });
+  })).filter((d) => isNewLead(d, priorMap));
+  console.log(`[hubspot] Initiative ${initiativeId}: new cohort ${newDeals.length} new-lead deals`);
 
   return {
     old: aggregateDeals(oldDeals, entryProperty, maturityDays, oldFrom, meetingAfterEntryOnly),
@@ -289,8 +376,10 @@ export async function fetchInitiativeData(
   };
 }
 
+// ── HolisticMonthData ─────────────────────────────────────────────────────────
+
 export interface HolisticMonthData {
-  // ── Sales Funnel view (cohort: anchored on lead-entry date, pipeline=default) ──
+  // Sales Funnel view (cohort: anchored on lead-entry date, pipeline=default, new leads only)
   lead: number;
   enrolled_in_seq: number;
   zoom_booked: number;
@@ -299,7 +388,7 @@ export interface HolisticMonthData {
   resumes_sent: number;
   interview_scheduled: number;
   agreement_sent: number;
-  active_client: number;       // note: may be low — active clients move out of default pipeline
+  active_client: number;
   closed_lost_total: number;
   cl_never_met: number;
   cl_booked_no_place: number;
@@ -313,13 +402,15 @@ export interface HolisticMonthData {
   cl_from_interview: number;
   cl_from_agreement: number;
   cl_from_active: number;
-  // ── Sales Pipeline view (activity-based: each metric anchored on its own date, all pipelines) ──
-  sp_zoom_booked: number;        // zoom date in month, any pipeline
-  sp_closed_won: number;         // earliest post-billing date in month, any pipeline
-  sp_active_pipeline: number;    // entered post-billing in month, still open today
-  sp_active_client: number;      // active_client date in month, any pipeline
-  sp_closed_lost: number;        // closed_lost date in month, any pipeline
+  // Sales Pipeline view (activity-based: each metric anchored on its own date, all pipelines, new leads only)
+  sp_zoom_booked: number;
+  sp_closed_won: number;
+  sp_active_pipeline: number;
+  sp_active_client: number;
+  sp_closed_lost: number;
 }
+
+// ── fetchHolisticFunnel ───────────────────────────────────────────────────────
 
 export async function fetchHolisticFunnel(
   token: string,
@@ -327,93 +418,115 @@ export async function fetchHolisticFunnel(
 ): Promise<Record<string, HolisticMonthData>> {
   const now = new Date();
   const results: Record<string, HolisticMonthData> = {};
+  const exclusionFilter = getExclusionFilter();
+
+  // Fix 1: build prior-placement map ONCE before the month loop
+  const priorMap = await buildPriorPlacementMap(token, exclusionFilter);
+  await sleep(PAGE_DELAY_MS);
+
+  const baseFilters = [
+    { propertyName: "pipeline", operator: "EQ", value: "default" },
+    ...exclusionFilter,
+  ];
 
   for (let i = 0; i < monthsBack; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const year = d.getFullYear();
+    const year  = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, "0");
-    const from = `${year}-${month}-01`;
+    const from  = `${year}-${month}-01`;
     const lastDay = new Date(year, d.getMonth() + 1, 0).getDate();
-    const to = `${year}-${month}-${lastDay}`;
-    const key = `${year}-${month}`;
+    const to    = `${year}-${month}-${String(lastDay).padStart(2, "0")}`;
+    const toFull = toEndOfDay(to); // inclusive end-of-day for BETWEEN (Fix 2)
+    const key   = `${year}-${month}`;
 
-    const exclusionFilter = getExclusionFilter();
-    const baseFilters = [
-      { propertyName: "pipeline", operator: "EQ", value: "default" },
-      ...exclusionFilter,
-    ];
+    // Fix 2: log exact date params sent to HubSpot for every query
+    console.log(`[holistic] ${key} | from=${from} | to=${to} | toFull=${toFull}`);
 
-    // ── Query A: cohort (pipeline=default, lead entry in month) ── Sales Funnel view
-    const deals = await fetchAllDeals(token, {
+    // ── Query A: cohort (pipeline=default, lead entry in month, new leads only) ──
+    console.log(`[holistic] ${key} Query A — lead cohort: hs_v2_date_entered_appointmentscheduled BETWEEN ${from} AND ${toFull}`);
+    const allDeals = await fetchAllDeals(token, {
       filterGroups: [
         {
           filters: [
-            {
-              propertyName: `hs_v2_date_entered_${STAGE_IDS.LEAD}`,
-              operator: "BETWEEN",
-              value: from,
-              highValue: to,
-            },
+            { propertyName: `hs_v2_date_entered_${STAGE_IDS.LEAD}`, operator: "BETWEEN", value: from, highValue: toFull },
             ...baseFilters,
           ],
         },
       ],
       properties: DEAL_PROPERTIES,
+      associations: ["contacts"],
       limit: 200,
     });
+    const deals = allDeals.filter((deal) => isNewLead(deal, priorMap));
+    console.log(`[holistic] ${key} Query A: ${allDeals.length} total → ${deals.length} new-lead deals`);
     await sleep(PAGE_DELAY_MS);
 
-    // ── Query B: zoom booked in month, any pipeline ── Sales Pipeline view
-    const zoomDeals = await fetchAllDeals(token, {
+    // ── Query B: zoom booked in month, any pipeline, new leads only ──
+    console.log(`[holistic] ${key} Query B — sp_zoom: hs_v2_date_entered_13542462 BETWEEN ${from} AND ${toFull}`);
+    const allZoomDeals = await fetchAllDeals(token, {
       filterGroups: [{
         filters: [
-          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, operator: "BETWEEN", value: from, highValue: to },
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, operator: "BETWEEN", value: from, highValue: toFull },
           ...exclusionFilter,
         ],
       }],
       properties: DEAL_PROPERTIES,
+      associations: ["contacts"],
       limit: 200,
     });
+    const zoomDeals = allZoomDeals.filter((deal) => isNewLead(deal, priorMap));
+    console.log(`[holistic] ${key} Query B: ${allZoomDeals.length} total → ${zoomDeals.length} new-lead deals`);
     await sleep(PAGE_DELAY_MS);
 
-    // ── Query C: any post-billing stage entered in month, any pipeline ── Sales Pipeline closed won / active pipeline
-    // OR across all 4 post-billing stages via multiple filterGroups
-    const pbInMonthDeals = await fetchAllDeals(token, {
+    // ── Query C: any post-billing stage entered in month, any pipeline, new leads only ──
+    console.log(`[holistic] ${key} Query C — sp_closed_won: post-billing stages BETWEEN ${from} AND ${toFull}`);
+    const allPbDeals = await fetchAllDeals(token, {
       filterGroups: POST_BILLING_STAGES.map((stageId) => ({
         filters: [
-          { propertyName: `hs_v2_date_entered_${stageId}`, operator: "BETWEEN", value: from, highValue: to },
+          { propertyName: `hs_v2_date_entered_${stageId}`, operator: "BETWEEN", value: from, highValue: toFull },
           ...exclusionFilter,
         ],
       })),
       properties: DEAL_PROPERTIES,
+      associations: ["contacts"],
       limit: 200,
     });
+    const pbInMonthDeals = allPbDeals.filter((deal) => isNewLead(deal, priorMap));
+    console.log(`[holistic] ${key} Query C: ${allPbDeals.length} total → ${pbInMonthDeals.length} new-lead deals`);
     await sleep(PAGE_DELAY_MS);
 
-    // ── Query D: active client placed in month, any pipeline ──
-    const activeDeals = await fetchAllDeals(token, {
+    // ── Query D: active client placed in month, any pipeline, new leads only ──
+    console.log(`[holistic] ${key} Query D — sp_active_client: hs_v2_date_entered_12751919 BETWEEN ${from} AND ${toFull}`);
+    const allActiveDeals = await fetchAllDeals(token, {
       filterGroups: [{
         filters: [
-          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "BETWEEN", value: from, highValue: to },
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "BETWEEN", value: from, highValue: toFull },
           ...exclusionFilter,
         ],
       }],
       properties: DEAL_PROPERTIES,
+      associations: ["contacts"],
       limit: 200,
     });
+    const activeDeals = allActiveDeals.filter((deal) => isNewLead(deal, priorMap));
+    console.log(`[holistic] ${key} Query D: ${allActiveDeals.length} total → ${activeDeals.length} new-lead deals`);
     await sleep(PAGE_DELAY_MS);
 
-    // ── Query E: closed lost in month, any pipeline ──
-    const clDeals = await fetchAllDeals(token, {
+    // ── Query E: closed lost in month, any pipeline, new leads only ──
+    console.log(`[holistic] ${key} Query E — sp_closed_lost: hs_v2_date_entered_28817241 BETWEEN ${from} AND ${toFull}`);
+    const allClDeals = await fetchAllDeals(token, {
       filterGroups: [{
         filters: [
-          { propertyName: `hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`, operator: "BETWEEN", value: from, highValue: to },
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`, operator: "BETWEEN", value: from, highValue: toFull },
           ...exclusionFilter,
         ],
       }],
       properties: DEAL_PROPERTIES,
+      associations: ["contacts"],
       limit: 200,
     });
+    const clDeals = allClDeals.filter((deal) => isNewLead(deal, priorMap));
+    console.log(`[holistic] ${key} Query E: ${allClDeals.length} total → ${clDeals.length} new-lead deals`);
     await sleep(PAGE_DELAY_MS);
 
     // ── Aggregate cohort (Query A) ──
@@ -466,20 +579,18 @@ export async function fetchHolisticFunnel(
     }
 
     // ── Aggregate Sales Pipeline metrics (Queries B–E) ──
-
-    // sp_closed_won / sp_active_pipeline: deduplicate pb query then find earliest pb date in month
     const pbDedupe = new Map<string, HubSpotDeal>();
-    for (const d of pbInMonthDeals) pbDedupe.set(d.id, d);
+    for (const deal of pbInMonthDeals) pbDedupe.set(deal.id, deal);
     let sp_closed_won = 0, sp_active_pipeline = 0;
-    for (const d of pbDedupe.values()) {
-      const pbMs = getPostBillingDate(d);
+    for (const deal of pbDedupe.values()) {
+      const pbMs = getPostBillingDate(deal);
       if (!pbMs) continue;
-      const pbMonthKey = new Date(pbMs).toISOString().slice(0, 7); // "YYYY-MM"
-      if (pbMonthKey !== key) continue; // earliest pb date not in this month
+      const pbMonthKey = new Date(pbMs).toISOString().slice(0, 7);
+      if (pbMonthKey !== key) continue;
       sp_closed_won++;
-      const hasActive = d.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
-      const hasCL     = d.properties[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`] ||
-                        d.properties[`hs_v2_date_entered_${STAGE_IDS.DO_NOT_CONTACT}`];
+      const hasActive = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
+      const hasCL     = deal.properties[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`] ||
+                        deal.properties[`hs_v2_date_entered_${STAGE_IDS.DO_NOT_CONTACT}`];
       if (!hasActive && !hasCL) sp_active_pipeline++;
     }
 
@@ -511,6 +622,8 @@ export async function fetchHolisticFunnel(
       sp_active_client: activeDeals.length,
       sp_closed_lost: clDeals.length,
     };
+
+    console.log(`[holistic] ${key} results: lead=${deals.length} zoom=${zoomDeals.length} sp_closed_won=${sp_closed_won} sp_active_client=${activeDeals.length} sp_closed_lost=${clDeals.length}`);
   }
 
   return results;

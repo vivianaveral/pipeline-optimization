@@ -3,9 +3,7 @@ import type { Initiative } from "@/config/initiatives";
 import type { MotionMetrics } from "@/lib/hubspot";
 import type { CacheData } from "@/lib/cache";
 import CohortFunnel from "./CohortFunnel";
-import WeeklyChart from "./WeeklyChart";
 import KPICards from "./KPICards";
-import ROIModule from "./ROIModule";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -147,7 +145,6 @@ function Detail({ initiative, old: o, newData: n, onClose }: DetailProps) {
         <>
           <KPICards old={o} newData={n} />
           <CohortFunnel old={o} newData={n} />
-          {o.weekly.length > 0 && <WeeklyChart old={o} newData={n} />}
         </>
       )}
     </div>
