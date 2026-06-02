@@ -1,9 +1,9 @@
 import type { Deal } from "./types";
-import { DEAL_PROPERTIES, EXCLUDED_CONTACT_IDS } from "./stages";
+import { DEAL_PROPERTIES, EXCLUDED_CONTACT_IDS, STAGE_IDS } from "./stages";
 
 const HS_SEARCH_URL = "https://api.hubspot.com/crm/v3/objects/deals/search";
 const PAGE_SIZE = 200;
-const PAGE_DELAY_MS = 300; // polite delay between pages
+const PAGE_DELAY_MS = 300;
 
 type Filter = {
   propertyName: string;
@@ -33,19 +33,12 @@ async function searchDeals(token: string, filterGroups: FilterGroup[]): Promise<
 
   do {
     page++;
-    const body: SearchBody = {
-      filterGroups,
-      properties: DEAL_PROPERTIES,
-      limit: PAGE_SIZE,
-    };
+    const body: SearchBody = { filterGroups, properties: DEAL_PROPERTIES, limit: PAGE_SIZE };
     if (after) body.after = after;
 
     const res = await fetch(HS_SEARCH_URL, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
 
@@ -55,10 +48,12 @@ async function searchDeals(token: string, filterGroups: FilterGroup[]): Promise<
     }
 
     const data = await res.json();
-    const batch: Deal[] = (data.results ?? []).map((r: { id: string; properties: Record<string, string | null> }) => ({
-      id: r.id,
-      properties: r.properties as Deal["properties"],
-    }));
+    const batch: Deal[] = (data.results ?? []).map(
+      (r: { id: string; properties: Record<string, string | null> }) => ({
+        id: r.id,
+        properties: r.properties as Deal["properties"],
+      })
+    );
     results.push(...batch);
 
     after = data.paging?.next?.after;
@@ -79,7 +74,6 @@ function monthRange(yearMonth: string): { from: string; to: string } {
   };
 }
 
-/** Returns "YYYY-MM" strings from 2026-01 through current month (inclusive). */
 function monthsSince(fromYYYYMM: string): string[] {
   const [fy, fm] = fromYYYYMM.split("-").map(Number);
   const now = new Date();
@@ -93,15 +87,40 @@ function monthsSince(fromYYYYMM: string): string[] {
   return months;
 }
 
-// ── Exclusion filter ───────────────────────────────────────────────────────────
-
 function exclusionFilter(): Filter[] {
   if (EXCLUDED_CONTACT_IDS.length === 0) return [];
   return [{ propertyName: "associations.contact", operator: "NOT_IN", values: EXCLUDED_CONTACT_IDS }];
 }
 
-// ── Main fetch: default pipeline deals, createdate >= 2026-01-01 ───────────────
-// Split by createdate month to stay under HubSpot's 10,000-result search limit.
+// ── Generic stage-date fetch (default pipeline) ─────────────────────────────
+// Fetches deals where a specific stage-entry date falls in 2026, default pipeline.
+// This captures deals CREATED before 2026 that progressed through this stage in 2026.
+
+async function fetchByStageDate(token: string, stageProp: string): Promise<Deal[]> {
+  const months = monthsSince("2026-01");
+  const byId = new Map<string, Deal>();
+
+  for (const m of months) {
+    const { from, to } = monthRange(m);
+    const batch = await searchDeals(token, [
+      {
+        filters: [
+          { propertyName: stageProp, operator: "GTE", value: from },
+          { propertyName: stageProp, operator: "LTE", value: to },
+          { propertyName: "pipeline", operator: "EQ", value: "default" },
+          ...exclusionFilter(),
+        ],
+      },
+    ]);
+    for (const d of batch) byId.set(d.id, d);
+    console.log(`[hs] ${stageProp} ${m}: ${batch.length} (total ${byId.size})`);
+    await sleep(PAGE_DELAY_MS);
+  }
+
+  return Array.from(byId.values());
+}
+
+// ── Fetch 1: Default pipeline deals by createdate ─────────────────────────────
 
 export async function fetchDefaultPipelineDeals(token: string): Promise<Deal[]> {
   const months = monthsSince("2026-01");
@@ -109,8 +128,6 @@ export async function fetchDefaultPipelineDeals(token: string): Promise<Deal[]> 
 
   for (const m of months) {
     const { from, to } = monthRange(m);
-    console.log(`[hs] default pipeline createdate ${m}: fetching...`);
-
     const batch = await searchDeals(token, [
       {
         filters: [
@@ -121,18 +138,15 @@ export async function fetchDefaultPipelineDeals(token: string): Promise<Deal[]> 
         ],
       },
     ]);
-
     for (const d of batch) byId.set(d.id, d);
-    console.log(`[hs] default pipeline ${m}: ${batch.length} deals (total so far: ${byId.size})`);
-
+    console.log(`[hs] default createdate ${m}: ${batch.length} (total ${byId.size})`);
     await sleep(PAGE_DELAY_MS);
   }
 
   return Array.from(byId.values());
 }
 
-// ── Active Client fetch: ALL pipelines, hs_v2_date_entered_12751919 in range ───
-// Split by active-client entry month.
+// ── Fetch 2: Active Client deals — ALL pipelines, by AC stage date ─────────────
 
 export async function fetchActiveClientDeals(token: string): Promise<Deal[]> {
   const months = monthsSince("2026-01");
@@ -140,36 +154,74 @@ export async function fetchActiveClientDeals(token: string): Promise<Deal[]> {
 
   for (const m of months) {
     const { from, to } = monthRange(m);
-    console.log(`[hs] active client month ${m}: fetching...`);
-
     const batch = await searchDeals(token, [
       {
         filters: [
-          { propertyName: "hs_v2_date_entered_12751919", operator: "GTE", value: from },
-          { propertyName: "hs_v2_date_entered_12751919", operator: "LTE", value: to },
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "GTE", value: from },
+          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "LTE", value: to },
           ...exclusionFilter(),
         ],
       },
     ]);
-
     for (const d of batch) byId.set(d.id, d);
-    console.log(`[hs] active client ${m}: ${batch.length} deals (total so far: ${byId.size})`);
-
+    console.log(`[hs] active client ${m}: ${batch.length} (total ${byId.size})`);
     await sleep(PAGE_DELAY_MS);
   }
 
   return Array.from(byId.values());
 }
 
-// ── Merge: combine both sets, default-pipeline deals take precedence ───────────
+// ── Fetch 3: Parking Lot deals — default pipeline, by stage-entry date ─────────
+// Fix: captures deals created BEFORE 2026 that entered Parking Lot in 2026.
 
-export function mergeDeals(defaultDeals: Deal[], activeClientDeals: Deal[]): Deal[] {
+export async function fetchParkingLotDeals(token: string): Promise<Deal[]> {
+  return fetchByStageDate(token, `hs_v2_date_entered_${STAGE_IDS.PARKING_LOT}`);
+}
+
+// ── Fetch 4: Post-billing deals — default pipeline, by any post-billing date ───
+// Fix: captures deals created BEFORE 2026 that advanced to recruiting/etc. in 2026.
+// filterGroups are OR'd → returns deals where ANY of the four stages was entered.
+
+export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
+  const months = monthsSince("2026-01");
   const byId = new Map<string, Deal>();
-  // Default pipeline deals first
-  for (const d of defaultDeals) byId.set(d.id, d);
-  // Active client deals — add only if not already present (preserve default pipeline data)
-  for (const d of activeClientDeals) {
-    if (!byId.has(d.id)) byId.set(d.id, d);
+
+  const pbProps = [
+    `hs_v2_date_entered_${STAGE_IDS.RECRUITING}`,
+    `hs_v2_date_entered_${STAGE_IDS.RESUMES_SENT}`,
+    `hs_v2_date_entered_${STAGE_IDS.INTERVIEW_SCHED}`,
+    `hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`,
+  ];
+
+  for (const m of months) {
+    const { from, to } = monthRange(m);
+    const filterGroups: FilterGroup[] = pbProps.map((prop) => ({
+      filters: [
+        { propertyName: prop, operator: "GTE", value: from },
+        { propertyName: prop, operator: "LTE", value: to },
+        { propertyName: "pipeline", operator: "EQ", value: "default" },
+        ...exclusionFilter(),
+      ],
+    }));
+
+    const batch = await searchDeals(token, filterGroups);
+    for (const d of batch) byId.set(d.id, d);
+    console.log(`[hs] post-billing ${m}: ${batch.length} (total ${byId.size})`);
+    await sleep(PAGE_DELAY_MS);
+  }
+
+  return Array.from(byId.values());
+}
+
+// ── Merge helpers ──────────────────────────────────────────────────────────────
+
+/** Merge multiple deal arrays, deduplicating by ID. First occurrence wins. */
+export function mergeDeals(...arrays: Deal[][]): Deal[] {
+  const byId = new Map<string, Deal>();
+  for (const arr of arrays) {
+    for (const d of arr) {
+      if (!byId.has(d.id)) byId.set(d.id, d);
+    }
   }
   return Array.from(byId.values());
 }

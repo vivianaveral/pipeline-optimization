@@ -1,7 +1,16 @@
 import type { Deal, MonthlyMetrics, CohortMetrics, InitiativeSnapshot } from "./types";
 import { STAGE_IDS } from "./stages";
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── Date helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Check if a HubSpot date string falls within a given month.
+ * Uses string prefix matching ("2026-05-...".startsWith("2026-05")) — robust
+ * against timezone edge cases and avoids timestamp arithmetic entirely.
+ */
+function inMonth(dateStr: string | null | undefined, monthKey: string): boolean {
+  return !!dateStr && dateStr.startsWith(monthKey);
+}
 
 function ts(val: string | null | undefined): number | null {
   if (!val) return null;
@@ -9,12 +18,9 @@ function ts(val: string | null | undefined): number | null {
   return isNaN(t) ? null : t;
 }
 
-function inRange(val: string | null | undefined, start: number, end: number): boolean {
-  const t = ts(val);
-  return t !== null && t >= start && t <= end;
-}
+// ── Business logic ─────────────────────────────────────────────────────────────
 
-/** isValidLead: any of Lead / Enrolled / Zoom dates is set */
+/** isValidLead: any of Lead / Enrolled / Zoom dates is set (per brief) */
 function isValidLead(deal: Deal): boolean {
   return !!(
     deal.properties.hs_v2_date_entered_appointmentscheduled ||
@@ -23,7 +29,11 @@ function isValidLead(deal: Deal): boolean {
   );
 }
 
-/** Earliest date a deal entered any post-billing stage (Recruiting/Resumes/Interview/Agreement) */
+/**
+ * Earliest date a deal entered any post-billing stage.
+ * Brief definition: Recruiting / Resumes Sent / Interview Scheduled / Agreement Sent.
+ * A deal is "Closed Won" when this date falls within the selected month.
+ */
 function closedWonDate(deal: Deal): number | null {
   if (!isValidLead(deal)) return null;
   const candidates = [
@@ -40,61 +50,51 @@ function pct(num: number, denom: number): number {
   return Math.round((num / denom) * 1000) / 10;
 }
 
-// ── Monthly bounds ─────────────────────────────────────────────────────────────
-
-function monthBounds(monthKey: string): { start: number; end: number } {
-  const [y, m] = monthKey.split("-").map(Number);
-  const start = Date.UTC(y, m - 1, 1);
-  const end = Date.UTC(y, m, 0, 23, 59, 59, 999);
-  return { start, end };
-}
-
 // ── computeMonthlyMetrics ──────────────────────────────────────────────────────
-// allDeals: merged set (default pipeline + active client deals)
-// defaultDeals: only the default pipeline deals (for metrics that should exclude CS pipeline)
+//
+// salesDeals  — default pipeline only (createdate + parking-lot + post-billing fetches merged).
+//               Used for all sales funnel metrics: calls booked, no-shows, billing,
+//               parking lot, closed lost, closed won, post-billing sub-stages, cohort.
+//
+// acDeals     — active client deals, ALL pipelines, fetched by AC stage date.
+//               Used ONLY for the active client count.
+//               Kept separate to prevent CS-pipeline deals (which may also have closed-lost
+//               dates set) from inflating the closed-lost or any other metric.
 
 export function computeMonthlyMetrics(
-  allDeals: Deal[],
+  salesDeals: Deal[],
+  acDeals: Deal[],
   monthKey: string
 ): MonthlyMetrics {
-  const { start, end } = monthBounds(monthKey);
-
-  // Activity counters (default pipeline included in allDeals)
   let callsBooked = 0, noShows = 0, billingEntered = 0, parkingLot = 0;
   let closedWon = 0, closedLost = 0;
   let missedZoom_cl = 0, missedZoom_rebooked = 0, missedZoom_open = 0;
   let billing_cl = 0, billing_progressed = 0, billing_active = 0;
   let recruiting = 0, resumesSent = 0, interviewScheduled = 0, agreementSent = 0;
   let cohort_leads = 0, cohort_booked = 0, cohort_noshow = 0, cohort_pipeline = 0, cohort_active = 0;
-  let activeClient = 0;
 
-  for (const deal of allDeals) {
+  // ── Sales funnel metrics — salesDeals only (strictly default pipeline) ──────
+  for (const deal of salesDeals) {
     const p = deal.properties;
 
-    // Active client — from ALL pipelines
-    if (inRange(p.hs_v2_date_entered_12751919, start, end)) activeClient++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`], monthKey)) callsBooked++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], monthKey)) noShows++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], monthKey)) billingEntered++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.PARKING_LOT}`], monthKey)) parkingLot++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`], monthKey)) closedLost++;
 
-    // Skip non-default pipeline deals for all other metrics
-    if (deal.properties.pipeline !== "default") continue;
-
-    // Sales Pipeline Activity metrics
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`], start, end)) callsBooked++;
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], start, end)) noShows++;
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], start, end)) billingEntered++;
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.PARKING_LOT}`], start, end)) parkingLot++;
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`], start, end)) closedLost++;
-
-    const cwDate = closedWonDate(deal);
-    if (cwDate !== null && cwDate >= start && cwDate <= end) closedWon++;
+    // Closed Won: earliest post-billing date in this month
+    const cwTs = closedWonDate(deal);
+    if (cwTs !== null && inMonth(new Date(cwTs).toISOString(), monthKey)) closedWon++;
 
     // Post-billing sub-stage activity
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.RECRUITING}`], start, end)) recruiting++;
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.RESUMES_SENT}`], start, end)) resumesSent++;
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.INTERVIEW_SCHED}`], start, end)) interviewScheduled++;
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`], start, end)) agreementSent++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RECRUITING}`], monthKey)) recruiting++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RESUMES_SENT}`], monthKey)) resumesSent++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.INTERVIEW_SCHED}`], monthKey)) interviewScheduled++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`], monthKey)) agreementSent++;
 
-    // Missed Zoom breakdown: classify deals where missed zoom date is in this month
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], start, end)) {
+    // Missed Zoom breakdown: deals where missed zoom date is in this month
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], monthKey)) {
       const missedTs = ts(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`]);
       const zoomTs = ts(p[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`]);
       const rebooked = missedTs !== null && zoomTs !== null && zoomTs > missedTs;
@@ -105,8 +105,8 @@ export function computeMonthlyMetrics(
       else missedZoom_open++;
     }
 
-    // Billing breakdown: classify deals where billing date is in this month
-    if (inRange(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], start, end)) {
+    // Billing breakdown: deals where billing date is in this month
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], monthKey)) {
       const hasCL = !!p[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`];
       const progressed = closedWonDate(deal) !== null;
 
@@ -116,22 +116,31 @@ export function computeMonthlyMetrics(
     }
 
     // Cohort: deals where Lead (appointmentscheduled) date is in this month
-    if (inRange(p.hs_v2_date_entered_appointmentscheduled, start, end)) {
+    if (inMonth(p.hs_v2_date_entered_appointmentscheduled, monthKey)) {
       cohort_leads++;
       if (p[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`]) cohort_booked++;
       if (p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`]) cohort_noshow++;
       if (closedWonDate(deal) !== null) cohort_pipeline++;
-      if (p.hs_v2_date_entered_12751919) cohort_active++;
+      if (p[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`]) cohort_active++;
     }
   }
 
+  // ── Active Client — acDeals only (all pipelines, strictly filtered by AC date) ──
+  let activeClient = 0;
+  for (const deal of acDeals) {
+    if (inMonth(deal.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`], monthKey)) {
+      activeClient++;
+    }
+  }
+
+  // ── Derived metrics ────────────────────────────────────────────────────────────
   const attended = Math.max(0, callsBooked - noShows);
   const dropOffs = Math.max(0, attended - billingEntered - parkingLot);
   const dropRate = attended > 0 ? Math.round((dropOffs / attended) * 1000) / 10 : 0;
 
   // Cohort maturity
   const [y, m] = monthKey.split("-").map(Number);
-  const monthEndMs = Date.UTC(y, m, 1); // start of next month = end of this month
+  const monthEndMs = Date.UTC(y, m, 1);
   const daysOld = Math.floor((Date.now() - monthEndMs) / (1000 * 60 * 60 * 24));
   let cohort_maturity: MonthlyMetrics["cohort_maturity"];
   if (daysOld < 14) cohort_maturity = "too_early";
@@ -171,14 +180,23 @@ export function computeMonthlyMetrics(
   };
 }
 
+// ── computeAllMonths ───────────────────────────────────────────────────────────
+
+export function computeAllMonths(
+  salesDeals: Deal[],
+  acDeals: Deal[]
+): Record<string, MonthlyMetrics> {
+  const months = monthsSince("2026-01");
+  const result: Record<string, MonthlyMetrics> = {};
+  for (const m of months) {
+    result[m] = computeMonthlyMetrics(salesDeals, acDeals, m);
+  }
+  return result;
+}
+
 // ── Initiative helpers ─────────────────────────────────────────────────────────
 
-function filterByDateProp(
-  deals: Deal[],
-  prop: string,
-  fromMs: number,
-  toMs: number
-): Deal[] {
+function filterByDateProp(deals: Deal[], prop: string, fromMs: number, toMs: number): Deal[] {
   return deals.filter((d) => {
     const t = ts(d.properties[prop as keyof Deal["properties"]]);
     return t !== null && t >= fromMs && t <= toMs;
@@ -198,7 +216,7 @@ function aggregateInit01Cohort(deals: Deal[]): CohortMetrics {
   for (const d of deals) {
     const hasZoom = !!d.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`];
     const hasPipeline = closedWonDate(d) !== null;
-    const hasActive = !!d.properties.hs_v2_date_entered_12751919;
+    const hasActive = !!d.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
     const hasCL = !!d.properties[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`];
     if (hasZoom) meetings++;
     if (hasPipeline) pipeline++;
@@ -225,11 +243,10 @@ function aggregateInit02Cohort(deals: Deal[], entryProp: string): CohortMetrics 
   for (const d of deals) {
     const entryTs = ts(d.properties[entryProp as keyof Deal["properties"]]);
     const zoomTs = ts(d.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`]);
-    // Rebooked = zoom booked date STRICTLY AFTER missed zoom date
     const rebookedDeal = entryTs !== null && zoomTs !== null && zoomTs > entryTs;
     if (rebookedDeal) rebooked++;
     if (closedWonDate(d) !== null) pipeline++;
-    if (d.properties.hs_v2_date_entered_12751919) active++;
+    if (d.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`]) active++;
     if (d.properties[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`]) clRate++;
   }
   return {
@@ -255,7 +272,6 @@ function aggregateInit04Cohort(deals: Deal[]): CohortMetrics {
     const recruitTs = ts(d.properties[`hs_v2_date_entered_${STAGE_IDS.RECRUITING}`]);
     const hasCL = !!d.properties[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`];
     const hasPipeline = closedWonDate(d) !== null;
-
     if (hasCL && !hasPipeline) billingCL++;
     if (billingTs !== null && recruitTs !== null && recruitTs > billingTs) {
       totalDays += (recruitTs - billingTs) / (1000 * 60 * 60 * 24);
@@ -276,42 +292,31 @@ function aggregateInit04Cohort(deals: Deal[]): CohortMetrics {
   };
 }
 
-// ── computeInitiatives ─────────────────────────────────────────────────────────
-
-export function computeInitiatives(
-  deals: Deal[]
-): Record<string, InitiativeSnapshot> {
-  // Only default pipeline deals for all initiatives (Active Client is looked up per deal)
-  const defaultDeals = deals.filter((d) => d.properties.pipeline === "default");
-
+export function computeInitiatives(salesDeals: Deal[]): Record<string, InitiativeSnapshot> {
   const enrolledProp = `hs_v2_date_entered_${STAGE_IDS.ENROLLED_IN_SEQ}`;
   const missedProp = `hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`;
   const billingProp = `hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`;
 
-  // Init 01 — Form fill / no call booked
-  const i01Old = filterByDateProp(defaultDeals, enrolledProp,
+  const i01Old = filterByDateProp(salesDeals, enrolledProp,
     Date.UTC(2026, 0, 26), Date.UTC(2026, 4, 16, 23, 59, 59, 999));
-  const i01New = filterByDatePropGTE(defaultDeals, enrolledProp, Date.UTC(2026, 4, 19));
+  const i01New = filterByDatePropGTE(salesDeals, enrolledProp, Date.UTC(2026, 4, 19));
 
-  // Init 02 — Missed Zoom Call
-  const i02Old = filterByDateProp(defaultDeals, missedProp,
+  const i02Old = filterByDateProp(salesDeals, missedProp,
     Date.UTC(2026, 0, 1), Date.UTC(2026, 4, 26, 23, 59, 59, 999));
-  const i02New = filterByDatePropGTE(defaultDeals, missedProp, Date.UTC(2026, 4, 27));
+  const i02New = filterByDatePropGTE(salesDeals, missedProp, Date.UTC(2026, 4, 27));
 
-  // Init 03 — TZ Rebook (same entry as 02 but different date range)
-  const i03Old = filterByDateProp(defaultDeals, missedProp,
+  const i03Old = filterByDateProp(salesDeals, missedProp,
     Date.UTC(2026, 1, 22), Date.UTC(2026, 2, 7, 23, 59, 59, 999));
-  const i03New = filterByDatePropGTE(defaultDeals, missedProp, Date.UTC(2026, 3, 8));
+  const i03New = filterByDatePropGTE(salesDeals, missedProp, Date.UTC(2026, 3, 8));
 
-  // Init 04 — 48hr Call Tasks (billing + recruiting)
-  const i04Old = defaultDeals.filter((d) => {
+  const i04Old = salesDeals.filter((d) => {
     const t = ts(d.properties[billingProp as keyof Deal["properties"]]);
     return t !== null && t < Date.UTC(2026, 4, 11);
   });
-  const i04New = filterByDatePropGTE(defaultDeals, billingProp, Date.UTC(2026, 4, 11));
+  const i04New = filterByDatePropGTE(salesDeals, billingProp, Date.UTC(2026, 4, 11));
 
-  // Init 05 — Pre-Meeting Email (no new cohort yet)
-  const i05Old = filterByDatePropGTE(defaultDeals, `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, Date.UTC(2026, 0, 1));
+  const i05Old = filterByDatePropGTE(salesDeals,
+    `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, Date.UTC(2026, 0, 1));
   const i05New: Deal[] = [];
 
   return {
@@ -323,18 +328,7 @@ export function computeInitiatives(
   };
 }
 
-// ── computeAllMonths ───────────────────────────────────────────────────────────
-
-export function computeAllMonths(
-  allDeals: Deal[]
-): Record<string, MonthlyMetrics> {
-  const months = monthsSince("2026-01");
-  const result: Record<string, MonthlyMetrics> = {};
-  for (const m of months) {
-    result[m] = computeMonthlyMetrics(allDeals, m);
-  }
-  return result;
-}
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function monthsSince(fromYYYYMM: string): string[] {
   const [fy, fm] = fromYYYYMM.split("-").map(Number);
