@@ -26,7 +26,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ── Core paginator ─────────────────────────────────────────────────────────────
 
-async function searchDeals(token: string, filterGroups: FilterGroup[]): Promise<Deal[]> {
+async function searchDeals(
+  token: string,
+  filterGroups: FilterGroup[],
+  label: string
+): Promise<Deal[]> {
+  // Log exact filters before every request so we can verify correctness
+  console.log(`[hs:filter] ${label} → ${JSON.stringify(filterGroups)}`);
+
   const results: Deal[] = [];
   let after: string | undefined;
   let page = 0;
@@ -44,7 +51,7 @@ async function searchDeals(token: string, filterGroups: FilterGroup[]): Promise<
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`HubSpot ${res.status} (page ${page}): ${text}`);
+      throw new Error(`HubSpot ${res.status} [${label} p${page}]: ${text}`);
     }
 
     const data = await res.json();
@@ -74,7 +81,7 @@ function monthRange(yearMonth: string): { from: string; to: string } {
   };
 }
 
-function monthsSince(fromYYYYMM: string): string[] {
+export function monthsSince(fromYYYYMM: string): string[] {
   const [fy, fm] = fromYYYYMM.split("-").map(Number);
   const now = new Date();
   const cy = now.getFullYear();
@@ -92,130 +99,140 @@ function exclusionFilter(): Filter[] {
   return [{ propertyName: "associations.contact", operator: "NOT_IN", values: EXCLUDED_CONTACT_IDS }];
 }
 
-// ── Generic stage-date fetch (default pipeline) ─────────────────────────────
-// Fetches deals where a specific stage-entry date falls in 2026, default pipeline.
-// This captures deals CREATED before 2026 that progressed through this stage in 2026.
-
-async function fetchByStageDate(token: string, stageProp: string): Promise<Deal[]> {
-  const months = monthsSince("2026-01");
-  const byId = new Map<string, Deal>();
-
-  for (const m of months) {
-    const { from, to } = monthRange(m);
-    const batch = await searchDeals(token, [
-      {
-        filters: [
-          { propertyName: stageProp, operator: "GTE", value: from },
-          { propertyName: stageProp, operator: "LTE", value: to },
-          { propertyName: "pipeline", operator: "EQ", value: "default" },
-          ...exclusionFilter(),
-        ],
-      },
-    ]);
-    for (const d of batch) byId.set(d.id, d);
-    console.log(`[hs] ${stageProp} ${m}: ${batch.length} (total ${byId.size})`);
-    await sleep(PAGE_DELAY_MS);
-  }
-
-  return Array.from(byId.values());
-}
-
-// ── Fetch 1: Default pipeline deals by createdate ─────────────────────────────
+// ── Fetch 1: Default pipeline deals by createdate ──────────────────────────────
+// Main deal set. Handles calls booked, no-shows, billing entered, cohort analysis,
+// missed zoom & billing breakdowns, post-billing sub-stages.
 
 export async function fetchDefaultPipelineDeals(token: string): Promise<Deal[]> {
-  const months = monthsSince("2026-01");
   const byId = new Map<string, Deal>();
-
-  for (const m of months) {
+  for (const m of monthsSince("2026-01")) {
     const { from, to } = monthRange(m);
-    const batch = await searchDeals(token, [
-      {
-        filters: [
-          { propertyName: "pipeline", operator: "EQ", value: "default" },
-          { propertyName: "createdate", operator: "GTE", value: from },
-          { propertyName: "createdate", operator: "LTE", value: to },
-          ...exclusionFilter(),
-        ],
-      },
-    ]);
-    for (const d of batch) byId.set(d.id, d);
-    console.log(`[hs] default createdate ${m}: ${batch.length} (total ${byId.size})`);
-    await sleep(PAGE_DELAY_MS);
-  }
-
-  return Array.from(byId.values());
-}
-
-// ── Fetch 2: Active Client deals — ALL pipelines, by AC stage date ─────────────
-
-export async function fetchActiveClientDeals(token: string): Promise<Deal[]> {
-  const months = monthsSince("2026-01");
-  const byId = new Map<string, Deal>();
-
-  for (const m of months) {
-    const { from, to } = monthRange(m);
-    const batch = await searchDeals(token, [
-      {
-        filters: [
-          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "GTE", value: from },
-          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "LTE", value: to },
-          ...exclusionFilter(),
-        ],
-      },
-    ]);
-    for (const d of batch) byId.set(d.id, d);
-    console.log(`[hs] active client ${m}: ${batch.length} (total ${byId.size})`);
-    await sleep(PAGE_DELAY_MS);
-  }
-
-  return Array.from(byId.values());
-}
-
-// ── Fetch 3: Parking Lot deals — default pipeline, by stage-entry date ─────────
-// Fix: captures deals created BEFORE 2026 that entered Parking Lot in 2026.
-
-export async function fetchParkingLotDeals(token: string): Promise<Deal[]> {
-  return fetchByStageDate(token, `hs_v2_date_entered_${STAGE_IDS.PARKING_LOT}`);
-}
-
-// ── Fetch 4: Post-billing deals — default pipeline, by any post-billing date ───
-// Fix: captures deals created BEFORE 2026 that advanced to recruiting/etc. in 2026.
-// filterGroups are OR'd → returns deals where ANY of the four stages was entered.
-
-export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
-  const months = monthsSince("2026-01");
-  const byId = new Map<string, Deal>();
-
-  const pbProps = [
-    `hs_v2_date_entered_${STAGE_IDS.RECRUITING}`,
-    `hs_v2_date_entered_${STAGE_IDS.RESUMES_SENT}`,
-    `hs_v2_date_entered_${STAGE_IDS.INTERVIEW_SCHED}`,
-    `hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`,
-  ];
-
-  for (const m of months) {
-    const { from, to } = monthRange(m);
-    const filterGroups: FilterGroup[] = pbProps.map((prop) => ({
+    const fg: FilterGroup[] = [{
       filters: [
-        { propertyName: prop, operator: "GTE", value: from },
-        { propertyName: prop, operator: "LTE", value: to },
         { propertyName: "pipeline", operator: "EQ", value: "default" },
+        { propertyName: "createdate", operator: "GTE", value: from },
+        { propertyName: "createdate", operator: "LTE", value: to },
         ...exclusionFilter(),
       ],
-    }));
-
-    const batch = await searchDeals(token, filterGroups);
+    }];
+    const batch = await searchDeals(token, fg, `default_createdate_${m}`);
     for (const d of batch) byId.set(d.id, d);
-    console.log(`[hs] post-billing ${m}: ${batch.length} (total ${byId.size})`);
+    console.log(`[hs] default_createdate ${m}: ${batch.length} → total ${byId.size}`);
     await sleep(PAGE_DELAY_MS);
   }
-
   return Array.from(byId.values());
 }
 
-// ── Merge helpers ──────────────────────────────────────────────────────────────
+// ── Fetch 2: Parking Lot deals — by stage-entry date, NO pipeline filter ────────
+// FIX 1: Captures deals created BEFORE 2026 that entered parking lot in 2026.
+// No pipeline filter — stage date is the only criterion, no createdate dependency.
 
-/** Merge multiple deal arrays, deduplicating by ID. First occurrence wins. */
+export async function fetchParkingLotDeals(token: string): Promise<Deal[]> {
+  const byId = new Map<string, Deal>();
+  for (const m of monthsSince("2026-01")) {
+    const { from, to } = monthRange(m);
+    const fg: FilterGroup[] = [{
+      filters: [
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.PARKING_LOT}`, operator: "GTE", value: from },
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.PARKING_LOT}`, operator: "LTE", value: to },
+        ...exclusionFilter(),
+      ],
+    }];
+    const batch = await searchDeals(token, fg, `parking_lot_${m}`);
+    for (const d of batch) byId.set(d.id, d);
+    console.log(`[hs] parking_lot ${m}: ${batch.length} → total ${byId.size}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+  return Array.from(byId.values());
+}
+
+// ── Fetch 3: Closed Lost deals — by stage-entry date, pipeline=default ──────────
+// FIX 3: Dedicated CL query with explicit pipeline filter applied at API level.
+// Deals are counted for the month their CL date falls in — not by createdate.
+
+export async function fetchClosedLostDeals(token: string): Promise<Deal[]> {
+  const byId = new Map<string, Deal>();
+  for (const m of monthsSince("2026-01")) {
+    const { from, to } = monthRange(m);
+    const fg: FilterGroup[] = [{
+      filters: [
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`, operator: "GTE", value: from },
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`, operator: "LTE", value: to },
+        { propertyName: "pipeline", operator: "EQ", value: "default" },   // CRITICAL: default only
+        ...exclusionFilter(),
+      ],
+    }];
+    const batch = await searchDeals(token, fg, `closed_lost_${m}`);
+    for (const d of batch) byId.set(d.id, d);
+    console.log(`[hs] closed_lost ${m}: ${batch.length} → total ${byId.size}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+  return Array.from(byId.values());
+}
+
+// ── Fetch 4: Post-billing deals — by each stage-entry date, NO createdate ───────
+// FIX 4: Captures deals created BEFORE 2026 that advanced to post-billing in 2026.
+// Queries each of the 4 post-billing stages separately and deduplicates.
+
+export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
+  const stages = [
+    { id: STAGE_IDS.RECRUITING,    name: "recruiting"    },
+    { id: STAGE_IDS.RESUMES_SENT,  name: "resumes_sent"  },
+    { id: STAGE_IDS.INTERVIEW_SCHED, name: "interview_sched" },
+    { id: STAGE_IDS.AGREEMENT_SENT, name: "agreement_sent" },
+  ];
+
+  const byId = new Map<string, Deal>();
+
+  for (const stage of stages) {
+    for (const m of monthsSince("2026-01")) {
+      const { from, to } = monthRange(m);
+      const fg: FilterGroup[] = [{
+        filters: [
+          { propertyName: `hs_v2_date_entered_${stage.id}`, operator: "GTE", value: from },
+          { propertyName: `hs_v2_date_entered_${stage.id}`, operator: "LTE", value: to },
+          ...exclusionFilter(),
+          // No pipeline filter: brief's isValidLead check ensures only sales-funnel deals count
+        ],
+      }];
+      const batch = await searchDeals(token, fg, `post_billing_${stage.name}_${m}`);
+      for (const d of batch) byId.set(d.id, d);
+    }
+    console.log(`[hs] post_billing ${stage.name}: total so far ${byId.size}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+
+  console.log(`[hs] post_billing total unique: ${byId.size}`);
+  return Array.from(byId.values());
+}
+
+// ── Fetch 5: Active Client deals — ALL pipelines, by stage-entry date ───────────
+// FIX 2: Logging added. No pipeline filter (by design — deals move to CS pipeline).
+// inMonth check in metrics ensures only the correct month is counted.
+
+export async function fetchActiveClientDeals(token: string): Promise<Deal[]> {
+  const byId = new Map<string, Deal>();
+  for (const m of monthsSince("2026-01")) {
+    const { from, to } = monthRange(m);
+    const fg: FilterGroup[] = [{
+      filters: [
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "GTE", value: from },
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "LTE", value: to },
+        ...exclusionFilter(),
+        // No pipeline filter — deals move from default to CS pipeline at this stage
+      ],
+    }];
+    const batch = await searchDeals(token, fg, `active_client_${m}`);
+    for (const d of batch) byId.set(d.id, d);
+    console.log(`[hs] active_client ${m}: ${batch.length} → total ${byId.size}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+  return Array.from(byId.values());
+}
+
+// ── Merge ──────────────────────────────────────────────────────────────────────
+
+/** Deduplicate by deal ID. First-seen wins. */
 export function mergeDeals(...arrays: Deal[][]): Deal[] {
   const byId = new Map<string, Deal>();
   for (const arr of arrays) {
