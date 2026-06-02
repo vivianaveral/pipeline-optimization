@@ -9,10 +9,6 @@ const PAGE_DELAY_MS = 250;
 interface HubSpotDeal {
   id: string;
   properties: Record<string, string | null>;
-  // Present when the query includes associations: ["contacts"]
-  associations?: {
-    contacts?: { results: Array<{ id: string; type: string }> };
-  };
 }
 
 interface SearchQuery {
@@ -28,7 +24,6 @@ interface SearchQuery {
   properties: string[];
   limit: number;
   after?: string;
-  associations?: string[]; // e.g. ["contacts"] — returns contact IDs per deal
 }
 
 const DEAL_PROPERTIES = [
@@ -98,69 +93,13 @@ async function fetchAllDeals(token: string, query: SearchQuery): Promise<HubSpot
   return deals;
 }
 
-// ── New-lead filter (Fix 1) ──────────────────────────────────────────────────
-// Exclude deals where the associated contact already had an active placement
-// (hs_v2_date_entered_12751919) on an earlier deal, before this deal's lead date.
-
-/** Contact IDs associated with a deal (requires associations:["contacts"] in query). */
-function getDealContactIds(deal: HubSpotDeal): string[] {
-  return deal.associations?.contacts?.results?.map((c) => c.id) ?? [];
-}
-
-/**
- * Build a map of contactId → earliest active-client timestamp across all deals.
- * Called once before the main queries to avoid per-deal lookups.
- */
-async function buildPriorPlacementMap(
-  token: string,
-  exclusionFilter: ReturnType<typeof getExclusionFilter>
-): Promise<Map<string, number>> {
-  console.log("[hubspot] Building prior-placement map (contacts with prior active client deals)...");
-  const placedDeals = await fetchAllDeals(token, {
-    filterGroups: [
-      {
-        filters: [
-          { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "HAS_PROPERTY" },
-          ...exclusionFilter,
-        ],
-      },
-    ],
-    properties: [`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`],
-    associations: ["contacts"],
-    limit: 200,
-  });
-
-  const map = new Map<string, number>();
-  for (const deal of placedDeals) {
-    const activeStr = deal.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
-    if (!activeStr) continue;
-    const activeTs = new Date(activeStr).getTime();
-    for (const cid of getDealContactIds(deal)) {
-      const prev = map.get(cid);
-      if (prev === undefined || activeTs < prev) map.set(cid, activeTs);
-    }
-  }
-  console.log(`[hubspot] Prior-placement map: ${map.size} contacts with ≥1 prior active client deal`);
-  return map;
-}
-
-/**
- * Returns true if this deal is a "new lead" — the associated contact had no
- * active placement on any other deal before this deal's lead-entry date.
- * Deals with no lead date are included (can't determine, safe to keep).
- */
-function isNewLead(deal: HubSpotDeal, priorMap: Map<string, number>): boolean {
-  const leadStr = deal.properties[`hs_v2_date_entered_${STAGE_IDS.LEAD}`];
-  if (!leadStr) return true;
-  const leadTs = new Date(leadStr).getTime();
-  for (const cid of getDealContactIds(deal)) {
-    const priorTs = priorMap.get(cid);
-    if (priorTs !== undefined && priorTs < leadTs) return false;
-  }
-  return true;
-}
-
 // ── Date helpers ─────────────────────────────────────────────────────────────
+// TODO: New-leads filter (exclude repeat clients) needs to be re-implemented
+// using HubSpot's batch associations API — fetch deals first, then fetch
+// associated contacts via POST /crm/v4/associations/deals/contacts/batch/read,
+// build a contactId→earliestPlacementDate map, filter client-side. The previous
+// approach of passing associations:[] in the Search request body is not supported
+// by HubSpot's CRM Search API and causes a 400 error.
 
 /** Converts "YYYY-MM-DD" to the last millisecond of that day (UTC), for inclusive BETWEEN. */
 function toEndOfDay(dateStr: string): string {
@@ -326,11 +265,6 @@ export async function fetchInitiativeData(
   meetingAfterEntryOnly?: boolean
 ): Promise<{ old: MotionMetrics; new: MotionMetrics }> {
   const exclusionFilter = getExclusionFilter();
-
-  // Fix 1: build prior-placement map once before fetching cohorts
-  const priorMap = await buildPriorPlacementMap(token, exclusionFilter);
-  await sleep(PAGE_DELAY_MS);
-
   const baseFilters = [
     { propertyName: "pipeline", operator: "EQ", value: "default" },
     ...exclusionFilter,
@@ -338,7 +272,7 @@ export async function fetchInitiativeData(
 
   console.log(`[hubspot] Initiative ${initiativeId}: old BETWEEN ${oldFrom} – ${toEndOfDay(oldTo)}, new ${newFrom}${newTo ? ` – ${toEndOfDay(newTo)}` : "+"}`);
 
-  const oldDeals = (await fetchAllDeals(token, {
+  const oldDeals = await fetchAllDeals(token, {
     filterGroups: [
       {
         filters: [
@@ -348,27 +282,25 @@ export async function fetchInitiativeData(
       },
     ],
     properties: DEAL_PROPERTIES,
-    associations: ["contacts"],
     limit: 200,
-  })).filter((d) => isNewLead(d, priorMap));
-  console.log(`[hubspot] Initiative ${initiativeId}: old cohort ${oldDeals.length} new-lead deals`);
+  });
+  console.log(`[hubspot] Initiative ${initiativeId}: old cohort ${oldDeals.length} deals`);
   await sleep(PAGE_DELAY_MS);
 
   const newMotionDateFilter = newTo
     ? { propertyName: entryProperty, operator: "BETWEEN", value: newFrom, highValue: toEndOfDay(newTo) }
     : { propertyName: entryProperty, operator: "GTE", value: newFrom };
 
-  const newDeals = (await fetchAllDeals(token, {
+  const newDeals = await fetchAllDeals(token, {
     filterGroups: [
       {
         filters: [newMotionDateFilter, ...baseFilters],
       },
     ],
     properties: DEAL_PROPERTIES,
-    associations: ["contacts"],
     limit: 200,
-  })).filter((d) => isNewLead(d, priorMap));
-  console.log(`[hubspot] Initiative ${initiativeId}: new cohort ${newDeals.length} new-lead deals`);
+  });
+  console.log(`[hubspot] Initiative ${initiativeId}: new cohort ${newDeals.length} deals`);
 
   return {
     old: aggregateDeals(oldDeals, entryProperty, maturityDays, oldFrom, meetingAfterEntryOnly),
