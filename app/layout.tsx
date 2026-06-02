@@ -1,9 +1,7 @@
-import type { Metadata } from "next";
 import "./globals.css";
 
-export const metadata: Metadata = {
-  title: "Sales Initiative KPI Tracker — BruntWork",
-  description: "Internal sales initiative performance tracker",
+export const metadata = {
+  title: "BruntWork Sales Initiative KPI Tracker",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

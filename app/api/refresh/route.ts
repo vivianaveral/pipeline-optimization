@@ -1,237 +1,78 @@
-import { NextRequest, NextResponse } from "next/server";
-import { INITIATIVES } from "@/config/initiatives";
-import { fetchInitiativeData, fetchHolisticFunnel } from "@/lib/hubspot";
-import { readCache, writeCache, type CacheData } from "@/lib/cache";
+import { NextResponse } from "next/server";
+import { fetchDefaultPipelineDeals, fetchActiveClientDeals, mergeDeals } from "@/lib/hubspot";
+import { computeAllMonths, computeInitiatives } from "@/lib/metrics";
+import { writeCache } from "@/lib/cache";
+import type { CacheData } from "@/lib/types";
 
-// Extend Railway/Next.js timeout to 60s per step
-export const maxDuration = 60;
+export const maxDuration = 300; // Railway Pro supports up to 300s
 
-export async function POST(req: NextRequest) {
+export async function POST() {
   const token = process.env.HUBSPOT_ACCESS_TOKEN;
   if (!token) {
-    return NextResponse.json({ error: "HUBSPOT_ACCESS_TOKEN is not set in environment variables" }, { status: 500 });
+    return NextResponse.json({ error: "HUBSPOT_ACCESS_TOKEN not set" }, { status: 500 });
   }
-
-  const { searchParams } = new URL(req.url);
-  const step = searchParams.get("step"); // initiative ID ("01"–"05") or "holistic", or null = full refresh
 
   try {
-    if (step === "holistic") {
-      return await handleHolistic(token);
-    }
+    console.log("[refresh] Starting HubSpot fetch...");
 
-    if (step) {
-      return await handleInitiative(token, step, req);
-    }
+    // 1. Fetch default pipeline deals (createdate >= 2026-01-01, by month)
+    const defaultDeals = await fetchDefaultPipelineDeals(token);
+    console.log(`[refresh] Default pipeline: ${defaultDeals.length} deals`);
 
-    // No step param — run everything sequentially (dev/testing convenience; Railway uses per-step calls)
-    return await handleAll(token);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[refresh] Unhandled error (step=${step ?? "all"}):`, err);
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
-}
+    // 2. Fetch active client deals across all pipelines
+    const activeClientDeals = await fetchActiveClientDeals(token);
+    console.log(`[refresh] Active client (all pipelines): ${activeClientDeals.length} deals`);
 
-export async function GET() {
-  return NextResponse.json({ error: "Use POST to refresh" }, { status: 405 });
-}
+    // 3. Merge (dedupe by deal ID, default pipeline data takes precedence)
+    const allDeals = mergeDeals(defaultDeals, activeClientDeals);
+    console.log(`[refresh] Merged: ${allDeals.length} total unique deals`);
 
-// ─── Per-step handlers ───────────────────────────────────────────────────────
+    // 4. Compute monthly metrics for all months Jan 2026 – current
+    const byMonth = computeAllMonths(allDeals);
 
-async function handleInitiative(token: string, id: string, req: NextRequest) {
-  const initiative = INITIATIVES.find((i) => i.id === id);
-  if (!initiative) {
-    return NextResponse.json({ error: `Unknown initiative id: ${id}` }, { status: 400 });
-  }
+    // 5. Compute initiative snapshots
+    const initiatives = computeInitiatives(allDeals);
 
-  // Optional date overrides from query params (supplied by period filter)
-  const sp = req.nextUrl.searchParams;
-  const paramOldFrom = sp.get("oldFrom") ?? undefined;
-  const paramOldTo   = sp.get("oldTo")   ?? undefined;
-  const paramNewFrom = sp.get("newFrom") ?? undefined;
-  const paramNewTo   = sp.get("newTo")   ?? undefined;
-
-  let result: CacheData["initiatives"][string];
-
-  if (initiative.notYetLaunched) {
-    result = {
-      old: buildBaselineMetrics(initiative),
-      new: buildEmptyMetrics(initiative.newMotion.maturityDays ?? 42),
+    const cache: CacheData = {
+      lastRefreshed: new Date().toISOString(),
+      dealCount: allDeals.length,
+      defaultPipelineDealCount: defaultDeals.length,
+      activeClientDealCount: activeClientDeals.length,
+      deals: allDeals,
+      computed: { byMonth },
+      initiatives,
     };
-  } else {
-    const entryProperty = initiative.entryProperty;
-    if (!entryProperty) {
-      return NextResponse.json({ error: `Initiative ${id} has no entryProperty configured` }, { status: 400 });
+
+    writeCache(cache);
+
+    // Log May 2026 validation numbers
+    const may = byMonth["2026-05"];
+    if (may) {
+      console.log("=== MAY 2026 VALIDATION ===");
+      console.log(`Calls booked:   ${may.callsBooked}  (target ~1,881)`);
+      console.log(`No-shows:       ${may.noShows}  (target ~722)`);
+      console.log(`Attended:       ${may.attended}  (target ~1,159)`);
+      console.log(`Billing entered:${may.billingEntered}  (target ~766)`);
+      console.log(`Parking Lot:    ${may.parkingLot}  (target ~266)`);
+      console.log(`Drop-offs:      ${may.dropOffs}  (target ~127)`);
+      console.log(`Drop rate:      ${may.dropRate}%  (target ~11.0%)`);
+      console.log(`Closed Won:     ${may.closedWon}  (target ~489)`);
+      console.log(`Active Client:  ${may.activeClient}  (target ~194)`);
+      console.log(`Closed Lost:    ${may.closedLost}  (target ~2,173)`);
+      console.log("===========================");
     }
 
-    const today = new Date().toISOString().split("T")[0];
-
-    // Use param overrides when present, fall back to initiative config
-    const oldFrom = paramOldFrom ?? initiative.oldMotion.dateFrom;
-    const oldTo   = paramOldTo   ?? (initiative.oldMotion.dateTo && initiative.oldMotion.dateTo !== "TBD"
-      ? initiative.oldMotion.dateTo : today);
-    const newFrom = paramNewFrom ?? (initiative.newMotion.dateFrom !== "TBD"
-      ? initiative.newMotion.dateFrom : today);
-    const newTo   = paramNewTo; // undefined = open-ended (all data), string = period cap
-
-    console.log(`[refresh] Fetching initiative ${id}: old ${oldFrom}→${oldTo}, new ${newFrom}${newTo ? `→${newTo}` : "+"}`);
-
-    try {
-      result = await fetchInitiativeData(
-        token,
-        initiative.id,
-        entryProperty,
-        oldFrom,
-        oldTo,
-        newFrom,
-        initiative.newMotion.maturityDays ?? 42,
-        newTo,
-        initiative.meetingAfterEntryOnly
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[refresh] HubSpot error on initiative ${id}:`, err);
-      return NextResponse.json({ error: `HubSpot error: ${message}` }, { status: 502 });
-    }
-  }
-
-  // Try to persist to cache (best-effort — client receives data regardless)
-  const existing = readCache() ?? emptyCache();
-  existing.initiatives[id] = result;
-  existing.refreshed_at = new Date().toISOString();
-  const cacheWrite = writeCache(existing);
-  if (!cacheWrite.ok) {
-    console.warn(`[refresh] Cache write failed for initiative ${id}: ${cacheWrite.error} — returning data directly to client`);
-  }
-
-  console.log(`[refresh] Initiative ${id} done — enrolled old=${result.old.enrolled} new=${result.new.enrolled}`);
-
-  // Always return the data in the response body so the client can render it
-  // even if the filesystem write failed
-  return NextResponse.json({
-    ok: true,
-    step: id,
-    data: result,
-    cache_written: cacheWrite.ok,
-  });
-}
-
-async function handleHolistic(token: string) {
-  console.log("[refresh] Fetching holistic funnel (6 months)...");
-
-  let holistic: CacheData["holistic"];
-  try {
-    holistic = await fetchHolisticFunnel(token, 6);
+    return NextResponse.json({
+      success: true,
+      timestamp: cache.lastRefreshed,
+      dealCount: allDeals.length,
+      defaultPipelineDealCount: defaultDeals.length,
+      activeClientDealCount: activeClientDeals.length,
+      validation: may ?? null,
+    });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[refresh] HubSpot error on holistic funnel:", err);
-    return NextResponse.json({ error: `Holistic funnel failed: ${message}` }, { status: 502 });
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[refresh] Error:", msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
-
-  const existing = readCache() ?? emptyCache();
-  existing.holistic = holistic;
-  existing.refreshed_at = new Date().toISOString();
-  const cacheWrite = writeCache(existing);
-
-  const monthCount = Object.keys(holistic).length;
-  console.log(`[refresh] Holistic done — ${monthCount} months`);
-
-  // Return holistic data directly so client can render without filesystem dependency
-  return NextResponse.json({ ok: true, step: "holistic", months: monthCount, data: holistic, cache_written: cacheWrite.ok });
-}
-
-async function handleAll(token: string) {
-  console.log("[refresh] Full refresh (all initiatives + holistic)...");
-  const initiativeResults: CacheData["initiatives"] = {};
-
-  for (const initiative of INITIATIVES) {
-    if (initiative.notYetLaunched) {
-      initiativeResults[initiative.id] = {
-        old: buildBaselineMetrics(initiative),
-        new: buildEmptyMetrics(initiative.newMotion.maturityDays ?? 42),
-      };
-      continue;
-    }
-
-    const entryProperty = initiative.entryProperty;
-    if (!entryProperty) continue;
-
-    const oldTo =
-      initiative.oldMotion.dateTo && initiative.oldMotion.dateTo !== "TBD"
-        ? initiative.oldMotion.dateTo
-        : new Date().toISOString().split("T")[0];
-
-    const newFrom =
-      initiative.newMotion.dateFrom !== "TBD"
-        ? initiative.newMotion.dateFrom
-        : new Date().toISOString().split("T")[0];
-
-    console.log(`[refresh] Fetching initiative ${initiative.id}...`);
-    try {
-      initiativeResults[initiative.id] = await fetchInitiativeData(
-        token,
-        initiative.id,
-        entryProperty,
-        initiative.oldMotion.dateFrom,
-        oldTo,
-        newFrom,
-        initiative.newMotion.maturityDays ?? 42,
-        undefined,
-        initiative.meetingAfterEntryOnly
-      );
-    } catch (err) {
-      console.error(`[refresh] Initiative ${initiative.id} failed:`, err);
-      throw err; // bubble up to outer handler
-    }
-  }
-
-  console.log("[refresh] Fetching holistic funnel...");
-  const holistic = await fetchHolisticFunnel(token, 6);
-
-  const cache: CacheData = {
-    refreshed_at: new Date().toISOString(),
-    initiatives: initiativeResults,
-    holistic,
-  };
-  writeCache(cache);
-
-  console.log("[refresh] Full refresh complete");
-  return NextResponse.json({ ok: true, refreshed_at: cache.refreshed_at });
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function emptyCache(): CacheData {
-  return { refreshed_at: new Date().toISOString(), initiatives: {}, holistic: {} };
-}
-
-function buildEmptyMetrics(maturityDays: number) {
-  return {
-    enrolled: 0, meetings_booked: 0, pipeline_entered: 0, active_client: 0,
-    terminated: 0, cl_never_met: 0, cl_booked_no_pipeline: 0, cl_pipeline_no_place: 0,
-    still_open: 0, enroll_to_meeting_pct: 0, enroll_to_pipeline_pct: 0,
-    enroll_to_active_pct: 0, cl_no_meeting_pct: 0, cohort_age_days: 0,
-    is_mature: false, maturity_threshold_days: maturityDays, weekly: [],
-  };
-}
-
-function buildBaselineMetrics(initiative: (typeof INITIATIVES)[number]) {
-  if (initiative.id === "05" && initiative.baseline) {
-    const b = initiative.baseline;
-    return {
-      enrolled: b.zoom_booked_april,
-      meetings_booked: b.zoom_booked_april - b.missed_zoom_april,
-      pipeline_entered: 0, active_client: 0, terminated: 0,
-      cl_never_met: b.missed_zoom_april, cl_booked_no_pipeline: 0, cl_pipeline_no_place: 0,
-      still_open: 0,
-      enroll_to_meeting_pct: b.show_rate_proxy,
-      enroll_to_pipeline_pct: 0, enroll_to_active_pct: 0,
-      cl_no_meeting_pct: b.no_show_rate_proxy,
-      cohort_age_days: 60, is_mature: true,
-      maturity_threshold_days: initiative.newMotion.maturityDays ?? 14,
-      weekly: [],
-    };
-  }
-  return buildEmptyMetrics(initiative.newMotion.maturityDays ?? 42);
 }

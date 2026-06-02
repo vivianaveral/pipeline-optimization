@@ -19,5 +19,10 @@ dist/
 .DS_Store
 *.pem
 
-# cache data (regenerated on refresh)
+# cache data (regenerated on refresh — never commit)
+cache/data.json
 cache/initiative_data.json
+
+# build artifacts
+tsconfig.tsbuildinfo
+*.tsbuildinfo

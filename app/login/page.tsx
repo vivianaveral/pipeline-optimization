@@ -1,129 +1,52 @@
 "use client";
-import { useState, FormEvent } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const [password, setPassword] = useState("");
-  const [error, setError]       = useState<string | null>(null);
-  const [loading, setLoading]   = useState(false);
 
-  async function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
     setLoading(true);
-
-    try {
-      const res = await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-
-      if (res.ok) {
-        router.push("/");
-        router.refresh();
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error ?? "Incorrect password.");
-        setPassword("");
-      }
-    } catch {
-      setError("Network error — please try again.");
-    } finally {
-      setLoading(false);
+    setError("");
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pw }),
+    });
+    setLoading(false);
+    if (res.ok) {
+      router.push("/");
+      router.refresh();
+    } else {
+      setError("Invalid password");
     }
   }
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      background: "var(--bg)",
-      padding: 24,
-    }}>
-      <div style={{
-        background: "var(--card)",
-        border: "1px solid var(--border)",
-        borderRadius: 14,
-        boxShadow: "0 4px 24px rgba(0,0,0,0.08)",
-        padding: "40px 36px",
-        width: "100%",
-        maxWidth: 380,
-      }}>
-        {/* Logo / wordmark */}
-        <div style={{ textAlign: "center", marginBottom: 28 }}>
-          <div style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            marginBottom: 8,
-          }}>
-            <div style={{
-              width: 36, height: 36,
-              background: "var(--old)",
-              borderRadius: 8,
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <span style={{ color: "#fff", fontSize: 18, fontWeight: 700 }}>B</span>
-            </div>
-            <span style={{ fontSize: 20, fontWeight: 700, color: "var(--text)", letterSpacing: "-0.02em" }}>
-              BruntWork
-            </span>
-          </div>
-          <p style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
-            Sales Initiative KPI Tracker
-          </p>
-        </div>
-
-        {/* Form */}
-        <form onSubmit={handleSubmit}>
-          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--muted)", marginBottom: 6 }}>
-            Password
-          </label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Enter dashboard password"
-            autoFocus
-            required
-            style={{
-              width: "100%",
-              padding: "10px 12px",
-              fontSize: 14,
-              border: `1px solid ${error ? "var(--danger)" : "var(--border)"}`,
-              borderRadius: 8,
-              background: "var(--bg)",
-              color: "var(--text)",
-              outline: "none",
-              marginBottom: 8,
-              transition: "border-color 0.15s",
-            }}
-          />
-
-          {error && (
-            <p style={{ fontSize: 12, color: "var(--danger)", marginBottom: 12, fontWeight: 500 }}>
-              {error}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading || !password}
-            className="btn primary"
-            style={{ width: "100%", marginTop: error ? 0 : 8, justifyContent: "center" }}
-          >
-            {loading ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-
-        <p style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 20 }}>
-          Internal use only · BruntWork RevOps
-        </p>
-      </div>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <form onSubmit={handleSubmit} style={{ width: 320, background: "#fff", border: "0.5px solid #e0e0e0", borderRadius: 8, padding: 32 }}>
+        <h1 style={{ fontSize: 16, fontWeight: 600, marginBottom: 24 }}>BruntWork RevOps</h1>
+        <input
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          placeholder="Password"
+          autoFocus
+          style={{ width: "100%", padding: "8px 12px", border: "0.5px solid #ccc", borderRadius: 4, marginBottom: 12, fontSize: 14 }}
+        />
+        {error && <p style={{ color: "#c00", marginBottom: 12, fontSize: 13 }}>{error}</p>}
+        <button
+          type="submit"
+          disabled={loading}
+          style={{ width: "100%", padding: "8px 12px", background: "#185FA5", color: "#fff", border: "none", borderRadius: 4, fontSize: 14 }}
+        >
+          {loading ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
     </div>
   );
 }
