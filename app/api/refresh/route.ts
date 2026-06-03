@@ -84,12 +84,12 @@ export async function POST() {
       console.log(`No-shows:        ${may.noShows}   (target ~722)`);
       console.log(`Attended:        ${may.attended}   (target ~1,159)`);
       console.log(`Billing entered: ${may.billingEntered}   (target ~766)`);
-      console.log(`Parking Lot:     ${may.parkingLot}   (target ~266)  ← FIX 1`);
-      console.log(`Drop-offs:       ${may.dropOffs}   (target ~127)`);
-      console.log(`Drop rate:       ${may.dropRate}%   (target ~11.0%)`);
-      console.log(`Closed Won:      ${may.closedWon}   (target ~489)  ← FIX 4`);
-      console.log(`Active Client:   ${may.activeClient}   (target ~194)  ← FIX 2`);
-      console.log(`Closed Lost:     ${may.closedLost}   (target ~2,173)  ← FIX 3`);
+      console.log(`Parking Lot:     ${may.parkingLot}   (target ~49)`);
+      console.log(`Drop-offs:       ${may.dropOffs}   (target ~344)`);
+      console.log(`Drop rate:       ${may.dropRate}%   (target ~29.7%)`);
+      console.log(`Closed Won:      ${may.closedWon}   (target ~489)`);
+      console.log(`Active Client:   ${may.activeClient}   (target ~180)`);
+      console.log(`Closed Lost:     ${may.closedLost}   (target ~2,171)`);
       console.log("[refresh] ────────────────────────────────────────────────");
     }
 

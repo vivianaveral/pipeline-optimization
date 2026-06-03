@@ -172,9 +172,10 @@ export async function fetchClosedLostDeals(token: string): Promise<Deal[]> {
   return Array.from(byId.values());
 }
 
-// ── Fetch 4: Post-billing deals — by each stage-entry date, NO createdate ───────
+// ── Fetch 4: Post-billing deals — by each stage-entry date, pipeline=default ─────
 // FIX 4: Captures deals created BEFORE 2026 that advanced to post-billing in 2026.
-// Queries each of the 4 post-billing stages separately and deduplicates.
+// pipeline=default added to prevent non-sales-funnel deals from leaking into wonPool
+// and inflating Closed Won. Queries each of the 4 post-billing stages separately.
 
 export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
   const stages = [
@@ -193,8 +194,8 @@ export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
         filters: [
           { propertyName: `hs_v2_date_entered_${stage.id}`, operator: "GTE", value: from },
           { propertyName: `hs_v2_date_entered_${stage.id}`, operator: "LTE", value: to },
+          { propertyName: "pipeline", operator: "EQ", value: "default" }, // prevent non-sales-funnel deals inflating Closed Won
           ...exclusionFilter(),
-          // No pipeline filter: brief's isValidLead check ensures only sales-funnel deals count
         ],
       }];
       const batch = await searchDeals(token, fg, `post_billing_${stage.name}_${m}`);
