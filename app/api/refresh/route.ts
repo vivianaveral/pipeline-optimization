@@ -5,7 +5,7 @@ import {
   fetchDefaultPipelineDeals,
   fetchParkingLotDeals,
   fetchClosedLostDeals,
-  fetchPostBillingDeals,
+  fetchClosedWonCounts,
   fetchActiveClientDeals,
   mergeDeals,
 } from "@/lib/hubspot";
@@ -44,9 +44,9 @@ export async function POST() {
     const closedLostDeals = await fetchClosedLostDeals(token);
     console.log(`[refresh] closedLostDeals: ${closedLostDeals.length}`);
 
-    // ── 5. Post-billing — Query 3: OR across 4 stages, pipeline=default, HAS_PROPERTY appt
-    const postBillingDeals = await fetchPostBillingDeals(token);
-    console.log(`[refresh] postBillingDeals: ${postBillingDeals.length}`);
+    // ── 5. Closed Won — Query 3: response.total per month (12 filters, under 18 limit)
+    const closedWonCounts = await fetchClosedWonCounts(token);
+    console.log(`[refresh] closedWonCounts months: ${Object.keys(closedWonCounts).length}`);
 
     // ── 6. Active Client — AC stage date, all pipelines, HAS_PROPERTY appt ───
     const acDeals = await fetchActiveClientDeals(token);
@@ -55,7 +55,7 @@ export async function POST() {
     // ── Compute monthly metrics using exact per-metric deal sets ──────────────
     const byMonth = computeAllMonths(
       defaultDeals, callsBookedDeals, noShowDeals,
-      parkingLotDeals, closedLostDeals, postBillingDeals, acDeals
+      parkingLotDeals, closedLostDeals, closedWonCounts, acDeals
     );
 
     // ── Initiatives use defaultDeals (sales funnel only) ─────────────────────
@@ -64,7 +64,7 @@ export async function POST() {
     // ── All deals for cache storage ───────────────────────────────────────────
     const allDeals = mergeDeals(
       callsBookedDeals, noShowDeals, defaultDeals,
-      parkingLotDeals, closedLostDeals, postBillingDeals, acDeals
+      parkingLotDeals, closedLostDeals, acDeals
     );
     console.log(`[refresh] allDeals (merged for cache): ${allDeals.length}`);
 
@@ -106,7 +106,7 @@ export async function POST() {
         defaultDeals: defaultDeals.length,
         parkingLotDeals: parkingLotDeals.length,
         closedLostDeals: closedLostDeals.length,
-        postBillingDeals: postBillingDeals.length,
+        closedWonMay: closedWonCounts["2026-05"] ?? 0,
         acDeals: acDeals.length,
         allDeals: allDeals.length,
       },

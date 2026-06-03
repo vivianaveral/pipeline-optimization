@@ -1,4 +1,5 @@
 import type { Deal, MonthlyMetrics, CohortMetrics, InitiativeSnapshot } from "./types";
+// closedWonCounts is Record<monthKey, total> sourced from fetchClosedWonCounts.
 import { STAGE_IDS } from "./stages";
 import { monthsSince } from "./hubspot";
 
@@ -66,19 +67,21 @@ function pct(num: number, denom: number): number {
 //
 //  closedLostDeals — CL stage date, pipeline=default, HAS_PROPERTY appt.
 //
-//  postBillingDeals— Query 3: OR across 4 stages, pipeline=default,
-//                    HAS_PROPERTY appointmentscheduled. Confirmed May: 481.
-//                    closedWon = deals where ANY stage date is in month.
+//  closedWonCounts — Query 3: response.total per month. 4 filterGroups × 3 filters
+//                    = 12 total (under HubSpot's 18-filter limit). No pipeline filter,
+//                    no exclusionFilter. HAS_PROPERTY appointmentscheduled is sufficient.
+//                    HubSpot deduplicates OR results; total IS the unique count.
+//                    Confirmed May: 481.
 //
 //  acDeals         — AC stage date, all pipelines, HAS_PROPERTY appt.
 
 export function computeMonthlyMetrics(
   defaultDeals: Deal[],
-  callsBookedDeals: Deal[],   // Query 1 — dedicated, confirmed correct
-  noShowDeals: Deal[],        // Query 2 — dedicated, confirmed correct
+  callsBookedDeals: Deal[],             // Query 1 — dedicated, confirmed correct
+  noShowDeals: Deal[],                  // Query 2 — dedicated, confirmed correct
   parkingLotDeals: Deal[],
   closedLostDeals: Deal[],
-  postBillingDeals: Deal[],   // Query 3 — OR-logic, confirmed correct
+  closedWonCounts: Record<string, number>, // Query 3 — response.total per month
   acDeals: Deal[],
   monthKey: string
 ): MonthlyMetrics {
@@ -156,22 +159,10 @@ export function computeMonthlyMetrics(
     }
   }
 
-  // ── Closed Won — Query 3 deal set ─────────────────────────────────────────────
-  // Count unique deals where ANY of the 4 post-billing stage dates falls in the month.
-  // postBillingDeals is deduplicated by deal ID across all months, so no double-counting.
-  // Matches Query 3 OR-logic exactly. Confirmed May 2026: 481.
-  let closedWon = 0;
-  for (const deal of postBillingDeals) {
-    const p = deal.properties;
-    if (
-      inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RECRUITING}`],     monthKey) ||
-      inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RESUMES_SENT}`],   monthKey) ||
-      inMonth(p[`hs_v2_date_entered_${STAGE_IDS.INTERVIEW_SCHED}`], monthKey) ||
-      inMonth(p[`hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`], monthKey)
-    ) {
-      closedWon++;
-    }
-  }
+  // ── Closed Won — response.total from Query 3 ──────────────────────────────────
+  // HubSpot deduplicates OR-logic results server-side; total IS the unique count.
+  // No in-memory loop needed. Confirmed May 2026: 481.
+  const closedWon = closedWonCounts[monthKey] ?? 0;
 
   // ── Active Client — dedicated AC set ──────────────────────────────────────────
   let activeClient = 0;
@@ -220,14 +211,14 @@ export function computeAllMonths(
   noShowDeals: Deal[],
   parkingLotDeals: Deal[],
   closedLostDeals: Deal[],
-  postBillingDeals: Deal[],
+  closedWonCounts: Record<string, number>,
   acDeals: Deal[]
 ): Record<string, MonthlyMetrics> {
   const result: Record<string, MonthlyMetrics> = {};
   for (const m of monthsSince("2026-01")) {
     result[m] = computeMonthlyMetrics(
       defaultDeals, callsBookedDeals, noShowDeals,
-      parkingLotDeals, closedLostDeals, postBillingDeals, acDeals, m
+      parkingLotDeals, closedLostDeals, closedWonCounts, acDeals, m
     );
   }
   return result;
