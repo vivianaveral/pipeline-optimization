@@ -302,57 +302,6 @@ export async function fetchClosedLostDeals(token: string): Promise<Deal[]> {
   return Array.from(byId.values());
 }
 
-// ── Fetch 4: Closed Won counts — exact Query 3, response.total per month ─────
-// 4 filterGroups × 3 filters = 12 total filters (HubSpot limit is 18).
-// No pipeline filter — HAS_PROPERTY appointmentscheduled is sufficient.
-// No exclusionFilter — keeping total at 12 to stay well under the limit.
-// HubSpot deduplicates OR-logic results; response.total IS the unique deal count.
-// Confirmed May 2026: 481.
-
-export async function fetchClosedWonCounts(token: string): Promise<Record<string, number>> {
-  const stageIds = [
-    STAGE_IDS.RECRUITING,
-    STAGE_IDS.RESUMES_SENT,
-    STAGE_IDS.INTERVIEW_SCHED,
-    STAGE_IDS.AGREEMENT_SENT,
-  ];
-
-  const counts: Record<string, number> = {};
-
-  for (const m of monthsSince("2026-01")) {
-    const { from, to } = monthRange(m);
-    // Exactly 3 filters per group × 4 groups = 12 filters total.
-    const fg: FilterGroup[] = stageIds.map((stageId) => ({
-      filters: [
-        { propertyName: `hs_v2_date_entered_${stageId}`, operator: "GTE", value: from },
-        { propertyName: `hs_v2_date_entered_${stageId}`, operator: "LTE", value: to },
-        { propertyName: "hs_v2_date_entered_appointmentscheduled", operator: "HAS_PROPERTY" },
-      ],
-    }));
-
-    console.log(`[hs:filter] closed_won_${m} → ${JSON.stringify(fg)}`);
-
-    // Single request — only need response.total, no pagination required.
-    const res = await fetch(HS_SEARCH_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ filterGroups: fg, properties: ["hs_object_id"], limit: 1 }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`HubSpot ${res.status} [closed_won_${m}]: ${text}`);
-    }
-
-    const data = await res.json();
-    counts[m] = data.total ?? 0;
-    console.log(`[hs] closed_won ${m}: total = ${counts[m]}`);
-    await sleep(PAGE_DELAY_MS);
-  }
-
-  return counts;
-}
-
 // ── Fetch 5: Active Client deals — ALL pipelines, by stage-entry date ───────────
 // No pipeline filter (by design — deals move to CS pipeline at this stage).
 // HAS_PROPERTY appointmentscheduled excludes existing clients re-entering the pipeline.
