@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import {
-  fetchCallsBookedDeals,
-  fetchNoShowDeals,
+  fetchCallsBookedCounts,
+  fetchNoShowCounts,
   fetchDefaultPipelineDeals,
   fetchParkingLotDeals,
   fetchClosedLostDeals,
@@ -22,39 +22,39 @@ export async function POST() {
   }
 
   try {
-    console.log("[refresh] ── Starting 7-query fetch ─────────────────────────");
+    console.log("[refresh] ── Starting fetch ──────────────────────────────────");
 
-    // ── 1a. Calls Booked — Query 1: zoom stage date, pipeline=default, HAS_PROPERTY appt
-    const callsBookedDeals = await fetchCallsBookedDeals(token);
-    console.log(`[refresh] callsBookedDeals: ${callsBookedDeals.length}`);
+    // ── Calls Booked — getCallsBooked() per month, response.total ─────────────
+    const callsBookedCounts = await fetchCallsBookedCounts(token);
+    console.log(`[refresh] callsBookedCounts: ${JSON.stringify(callsBookedCounts)}`);
 
-    // ── 1b. No-shows — Query 2: missed zoom stage date, pipeline=default, HAS_PROPERTY appt
-    const noShowDeals = await fetchNoShowDeals(token);
-    console.log(`[refresh] noShowDeals: ${noShowDeals.length}`);
+    // ── No-shows — getNoShows() per month, response.total ─────────────────────
+    const noShowCounts = await fetchNoShowCounts(token);
+    console.log(`[refresh] noShowCounts: ${JSON.stringify(noShowCounts)}`);
 
-    // ── 2. Default pipeline by createdate — billing, sub-stages, cohort ───────
+    // ── Default pipeline by createdate — billing, sub-stages, cohort ─────────
     const defaultDeals = await fetchDefaultPipelineDeals(token);
     console.log(`[refresh] defaultDeals: ${defaultDeals.length}`);
 
-    // ── 3. Parking Lot by stage-entry date (no pipeline filter) ───────────────
+    // ── Parking Lot by stage-entry date ───────────────────────────────────────
     const parkingLotDeals = await fetchParkingLotDeals(token);
     console.log(`[refresh] parkingLotDeals: ${parkingLotDeals.length}`);
 
-    // ── 4. Closed Lost — CL stage date, pipeline=default, HAS_PROPERTY appt ──
+    // ── Closed Lost — CL stage date, pipeline=default, HAS_PROPERTY appt ─────
     const closedLostDeals = await fetchClosedLostDeals(token);
     console.log(`[refresh] closedLostDeals: ${closedLostDeals.length}`);
 
-    // ── 5. Closed Won — Query 3: response.total per month (12 filters, under 18 limit)
+    // ── Closed Won — getClosedWon() per month, response.total ─────────────────
     const closedWonCounts = await fetchClosedWonCounts(token);
-    console.log(`[refresh] closedWonCounts months: ${Object.keys(closedWonCounts).length}`);
+    console.log(`[refresh] closedWonCounts: ${JSON.stringify(closedWonCounts)}`);
 
-    // ── 6. Active Client — AC stage date, all pipelines, HAS_PROPERTY appt ───
+    // ── Active Client — AC stage date, all pipelines, HAS_PROPERTY appt ──────
     const acDeals = await fetchActiveClientDeals(token);
     console.log(`[refresh] acDeals: ${acDeals.length}`);
 
-    // ── Compute monthly metrics using exact per-metric deal sets ──────────────
+    // ── Compute monthly metrics ───────────────────────────────────────────────
     const byMonth = computeAllMonths(
-      defaultDeals, callsBookedDeals, noShowDeals,
+      defaultDeals, callsBookedCounts, noShowCounts,
       parkingLotDeals, closedLostDeals, closedWonCounts, acDeals
     );
 
@@ -62,10 +62,7 @@ export async function POST() {
     const initiatives = computeInitiatives(defaultDeals);
 
     // ── All deals for cache storage ───────────────────────────────────────────
-    const allDeals = mergeDeals(
-      callsBookedDeals, noShowDeals, defaultDeals,
-      parkingLotDeals, closedLostDeals, acDeals
-    );
+    const allDeals = mergeDeals(defaultDeals, parkingLotDeals, closedLostDeals, acDeals);
     console.log(`[refresh] allDeals (merged for cache): ${allDeals.length}`);
 
     const cache: CacheData = {
@@ -101,12 +98,12 @@ export async function POST() {
       success: true,
       timestamp: cache.lastRefreshed,
       counts: {
-        callsBookedDeals: callsBookedDeals.length,
-        noShowDeals: noShowDeals.length,
+        callsBookedMay: callsBookedCounts["2026-05"] ?? 0,
+        noShowsMay: noShowCounts["2026-05"] ?? 0,
+        closedWonMay: closedWonCounts["2026-05"] ?? 0,
         defaultDeals: defaultDeals.length,
         parkingLotDeals: parkingLotDeals.length,
         closedLostDeals: closedLostDeals.length,
-        closedWonMay: closedWonCounts["2026-05"] ?? 0,
         acDeals: acDeals.length,
         allDeals: allDeals.length,
       },

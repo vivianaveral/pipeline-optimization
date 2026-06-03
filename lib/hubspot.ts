@@ -99,59 +99,139 @@ function exclusionFilter(): Filter[] {
   return [{ propertyName: "associations.contact", operator: "NOT_IN", values: EXCLUDED_CONTACT_IDS }];
 }
 
-// ── Fetch 1a: Calls Booked — exact Query 1 ────────────────────────────────────
-// stage date IN month, pipeline=default, HAS_PROPERTY appointmentscheduled
-// Confirmed May 2026 total = 1,875.
+// ── hubspotPost helper (used by count functions below) ────────────────────────
 
-export async function fetchCallsBookedDeals(token: string): Promise<Deal[]> {
-  const byId = new Map<string, Deal>();
-  for (const m of monthsSince("2026-01")) {
-    const { from, to } = monthRange(m);
-    const fg: FilterGroup[] = [{
-      filters: [
-        { propertyName: `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, operator: "GTE", value: from },
-        { propertyName: `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, operator: "LTE", value: to },
-        { propertyName: "pipeline", operator: "EQ", value: "default" },
-        { propertyName: "hs_v2_date_entered_appointmentscheduled", operator: "HAS_PROPERTY" },
-        ...exclusionFilter(),
-      ],
-    }];
-    const batch = await searchDeals(token, fg, `calls_booked_${m}`);
-    for (const d of batch) byId.set(d.id, d);
-    console.log(`[hs] calls_booked ${m}: ${batch.length} → total ${byId.size}`);
-    await sleep(PAGE_DELAY_MS);
-  }
-  return Array.from(byId.values());
+function makeHubspotPost(token: string) {
+  return async function hubspotPost(path: string, body: unknown) {
+    const res = await fetch(`https://api.hubspot.com${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`HubSpot ${res.status} [${path}]: ${text}`);
+    }
+    return res.json();
+  };
 }
 
-// ── Fetch 1b: No-shows — exact Query 2 ────────────────────────────────────────
-// stage date IN month, pipeline=default, HAS_PROPERTY appointmentscheduled
-// Confirmed May 2026 total = 701. Attended = 1,875 − 701 = 1,174.
-
-export async function fetchNoShowDeals(token: string): Promise<Deal[]> {
-  const byId = new Map<string, Deal>();
-  for (const m of monthsSince("2026-01")) {
-    const { from, to } = monthRange(m);
-    const fg: FilterGroup[] = [{
-      filters: [
-        { propertyName: `hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`, operator: "GTE", value: from },
-        { propertyName: `hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`, operator: "LTE", value: to },
-        { propertyName: "pipeline", operator: "EQ", value: "default" },
-        { propertyName: "hs_v2_date_entered_appointmentscheduled", operator: "HAS_PROPERTY" },
-        ...exclusionFilter(),
-      ],
-    }];
-    const batch = await searchDeals(token, fg, `no_shows_${m}`);
-    for (const d of batch) byId.set(d.id, d);
-    console.log(`[hs] no_shows ${m}: ${batch.length} → total ${byId.size}`);
-    await sleep(PAGE_DELAY_MS);
-  }
-  return Array.from(byId.values());
+function getMonthEnd(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  return `${month}-${String(lastDay).padStart(2, "0")}`;
 }
 
-// ── Fetch 2: Default pipeline deals by createdate ──────────────────────────────
-// Handles: billing entered, cohort analysis, billing breakdown, post-billing sub-stages.
-// callsBooked and noShows now have their own dedicated fetches above.
+// ── Count functions — exact implementations as specified ──────────────────────
+
+async function getCallsBooked(token: string, month: string): Promise<number> {
+  const hubspotPost = makeHubspotPost(token);
+  const start = `${month}-01`;
+  const end = getMonthEnd(month);
+  const res = await hubspotPost('/crm/v3/objects/deals/search', {
+    filterGroups: [{
+      filters: [
+        { propertyName: 'hs_v2_date_entered_13542462', operator: 'GTE', value: start },
+        { propertyName: 'hs_v2_date_entered_13542462', operator: 'LTE', value: end },
+        { propertyName: 'pipeline', operator: 'EQ', value: 'default' },
+        { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
+      ]
+    }],
+    limit: 1,
+    properties: ['hs_object_id']
+  });
+  return res.total; // confirmed May 2026: 1,875
+}
+
+async function getNoShows(token: string, month: string): Promise<number> {
+  const hubspotPost = makeHubspotPost(token);
+  const start = `${month}-01`;
+  const end = getMonthEnd(month);
+  const res = await hubspotPost('/crm/v3/objects/deals/search', {
+    filterGroups: [{
+      filters: [
+        { propertyName: 'hs_v2_date_entered_28817239', operator: 'GTE', value: start },
+        { propertyName: 'hs_v2_date_entered_28817239', operator: 'LTE', value: end },
+        { propertyName: 'pipeline', operator: 'EQ', value: 'default' },
+        { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
+      ]
+    }],
+    limit: 1,
+    properties: ['hs_object_id']
+  });
+  return res.total; // confirmed May 2026: 701
+}
+
+async function getClosedWon(token: string, month: string): Promise<number> {
+  const hubspotPost = makeHubspotPost(token);
+  const start = `${month}-01`;
+  const end = getMonthEnd(month);
+  // Single request, 4 filterGroups = OR logic, HubSpot deduplicates
+  // Max 3 filters per group to stay under 18 total filter limit
+  const res = await hubspotPost('/crm/v3/objects/deals/search', {
+    filterGroups: [
+      { filters: [
+        { propertyName: 'hs_v2_date_entered_5423787', operator: 'GTE', value: start },
+        { propertyName: 'hs_v2_date_entered_5423787', operator: 'LTE', value: end },
+        { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
+      ]},
+      { filters: [
+        { propertyName: 'hs_v2_date_entered_5568500', operator: 'GTE', value: start },
+        { propertyName: 'hs_v2_date_entered_5568500', operator: 'LTE', value: end },
+        { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
+      ]},
+      { filters: [
+        { propertyName: 'hs_v2_date_entered_12635527', operator: 'GTE', value: start },
+        { propertyName: 'hs_v2_date_entered_12635527', operator: 'LTE', value: end },
+        { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
+      ]},
+      { filters: [
+        { propertyName: 'hs_v2_date_entered_13812915', operator: 'GTE', value: start },
+        { propertyName: 'hs_v2_date_entered_13812915', operator: 'LTE', value: end },
+        { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
+      ]}
+    ],
+    limit: 1,
+    properties: ['hs_object_id']
+  });
+  return res.total; // confirmed May 2026: 481
+}
+
+// ── Month-looping wrappers (call per-month count functions for all months) ─────
+
+export async function fetchCallsBookedCounts(token: string): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const m of monthsSince("2026-01")) {
+    counts[m] = await getCallsBooked(token, m);
+    console.log(`[hs] calls_booked ${m}: ${counts[m]}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+  return counts;
+}
+
+export async function fetchNoShowCounts(token: string): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const m of monthsSince("2026-01")) {
+    counts[m] = await getNoShows(token, m);
+    console.log(`[hs] no_shows ${m}: ${counts[m]}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+  return counts;
+}
+
+export async function fetchClosedWonCounts(token: string): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const m of monthsSince("2026-01")) {
+    counts[m] = await getClosedWon(token, m);
+    console.log(`[hs] closed_won ${m}: ${counts[m]}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+  return counts;
+}
+
+// ── Fetch: Default pipeline deals by createdate ────────────────────────────────
+// Handles: billing entered, cohort analysis, billing breakdown,
+// post-billing sub-stage counts, missed-zoom breakdown.
 
 export async function fetchDefaultPipelineDeals(token: string): Promise<Deal[]> {
   const byId = new Map<string, Deal>();

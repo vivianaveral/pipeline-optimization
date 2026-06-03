@@ -52,52 +52,57 @@ function pct(num: number, denom: number): number {
 // Each metric uses a DEDICATED deal set matching the exact HubSpot query that
 // produced the confirmed correct count.
 //
-//  callsBookedDeals — Query 1: zoom booked stage date, pipeline=default,
-//                    HAS_PROPERTY appointmentscheduled. Confirmed May: 1,875.
+//  callsBookedCounts — getCallsBooked() per month: response.total. Confirmed May: 1,875.
 //
-//  noShowDeals      — Query 2: missed zoom stage date, pipeline=default,
-//                    HAS_PROPERTY appointmentscheduled. Confirmed May: 701.
-//                    Also drives missed-zoom breakdown.
+//  noShowCounts     — getNoShows() per month: response.total. Confirmed May: 701.
 //
 //  defaultDeals    — pipeline=default, createdate >= 2026-01.
-//                    Handles: billing entered, billing breakdown, post-billing
-//                    sub-stage counts, cohort analysis.
+//                    Handles: billing entered, billing/missed-zoom breakdowns,
+//                    post-billing sub-stage counts, cohort analysis.
 //
 //  parkingLotDeals — stage date only, no pipeline filter. Parking lot count.
 //
 //  closedLostDeals — CL stage date, pipeline=default, HAS_PROPERTY appt.
 //
-//  closedWonCounts — Query 3: response.total per month. 4 filterGroups × 3 filters
-//                    = 12 total (under HubSpot's 18-filter limit). No pipeline filter,
-//                    no exclusionFilter. HAS_PROPERTY appointmentscheduled is sufficient.
-//                    HubSpot deduplicates OR results; total IS the unique count.
-//                    Confirmed May: 481.
+//  closedWonCounts — getClosedWon() per month: response.total. Confirmed May: 481.
 //
 //  acDeals         — AC stage date, all pipelines, HAS_PROPERTY appt.
 
 export function computeMonthlyMetrics(
   defaultDeals: Deal[],
-  callsBookedDeals: Deal[],             // Query 1 — dedicated, confirmed correct
-  noShowDeals: Deal[],                  // Query 2 — dedicated, confirmed correct
+  callsBookedCounts: Record<string, number>, // getCallsBooked per month
+  noShowCounts: Record<string, number>,      // getNoShows per month
   parkingLotDeals: Deal[],
   closedLostDeals: Deal[],
-  closedWonCounts: Record<string, number>, // Query 3 — response.total per month
+  closedWonCounts: Record<string, number>,   // getClosedWon per month
   acDeals: Deal[],
   monthKey: string
 ): MonthlyMetrics {
-  // ── Calls booked — Query 1 deal set ───────────────────────────────────────────
-  let callsBooked = 0;
-  for (const deal of callsBookedDeals) {
-    if (inMonth(deal.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`], monthKey)) callsBooked++;
-  }
+  // ── Calls booked / No-shows — direct from confirmed API totals ────────────────
+  const callsBooked = callsBookedCounts[monthKey] ?? 0;
+  const noShows     = noShowCounts[monthKey]      ?? 0;
 
-  // ── No-shows + missed zoom breakdown — Query 2 deal set ───────────────────────
-  let noShows = 0;
+  // ── Default pipeline: billing, sub-stages, missed-zoom breakdown, cohort ──────
+  let billingEntered = 0;
   let missedZoom_cl = 0, missedZoom_rebooked = 0, missedZoom_open = 0;
-  for (const deal of noShowDeals) {
+  let billing_cl = 0, billing_progressed = 0, billing_active = 0;
+  let recruiting = 0, resumesSent = 0, interviewScheduled = 0, agreementSent = 0;
+  let cohort_leads = 0, cohort_booked = 0, cohort_noshow = 0, cohort_pipeline = 0, cohort_active = 0;
+
+  for (const deal of defaultDeals) {
     const p = deal.properties;
-    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], monthKey)) {
-      noShows++;
+    const isDefault    = p.pipeline === "default";
+    const hasApptSched = !!p.hs_v2_date_entered_appointmentscheduled;
+
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], monthKey)) billingEntered++;
+
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RECRUITING}`],      monthKey)) recruiting++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RESUMES_SENT}`],    monthKey)) resumesSent++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.INTERVIEW_SCHED}`], monthKey)) interviewScheduled++;
+    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`],  monthKey)) agreementSent++;
+
+    // Missed-zoom breakdown — mirrors getNoShows() filters (default + apptSched)
+    if (isDefault && hasApptSched && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], monthKey)) {
       const missedTs = ts(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`]);
       const zoomTs   = ts(p[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`]);
       const rebooked = missedTs !== null && zoomTs !== null && zoomTs > missedTs;
@@ -106,27 +111,10 @@ export function computeMonthlyMetrics(
       else if (hasCL) missedZoom_cl++;
       else missedZoom_open++;
     }
-  }
-
-  // ── Default pipeline: billing, sub-stage counts, billing breakdown, cohort ────
-  let billingEntered = 0;
-  let billing_cl = 0, billing_progressed = 0, billing_active = 0;
-  let recruiting = 0, resumesSent = 0, interviewScheduled = 0, agreementSent = 0;
-  let cohort_leads = 0, cohort_booked = 0, cohort_noshow = 0, cohort_pipeline = 0, cohort_active = 0;
-
-  for (const deal of defaultDeals) {
-    const p = deal.properties;
-
-    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], monthKey)) billingEntered++;
-
-    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RECRUITING}`], monthKey))     recruiting++;
-    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RESUMES_SENT}`], monthKey))   resumesSent++;
-    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.INTERVIEW_SCHED}`], monthKey)) interviewScheduled++;
-    if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`], monthKey)) agreementSent++;
 
     // Billing breakdown
     if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], monthKey)) {
-      const hasCL    = !!p[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`];
+      const hasCL      = !!p[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`];
       const progressed = earliestPostBillingTs(deal) !== null;
       if (progressed) billing_progressed++;
       else if (hasCL) billing_cl++;
@@ -207,8 +195,8 @@ export function computeMonthlyMetrics(
 
 export function computeAllMonths(
   defaultDeals: Deal[],
-  callsBookedDeals: Deal[],
-  noShowDeals: Deal[],
+  callsBookedCounts: Record<string, number>,
+  noShowCounts: Record<string, number>,
   parkingLotDeals: Deal[],
   closedLostDeals: Deal[],
   closedWonCounts: Record<string, number>,
@@ -217,7 +205,7 @@ export function computeAllMonths(
   const result: Record<string, MonthlyMetrics> = {};
   for (const m of monthsSince("2026-01")) {
     result[m] = computeMonthlyMetrics(
-      defaultDeals, callsBookedDeals, noShowDeals,
+      defaultDeals, callsBookedCounts, noShowCounts,
       parkingLotDeals, closedLostDeals, closedWonCounts, acDeals, m
     );
   }
