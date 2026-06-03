@@ -148,6 +148,7 @@ export async function fetchParkingLotDeals(token: string): Promise<Deal[]> {
 
 // ── Fetch 3: Closed Lost deals — by stage-entry date, pipeline=default ──────────
 // FIX 3: Dedicated CL query with explicit pipeline filter applied at API level.
+// Also requires HAS_PROPERTY appointmentscheduled to exclude non-sales-funnel deals.
 // Deals are counted for the month their CL date falls in — not by createdate.
 
 export async function fetchClosedLostDeals(token: string): Promise<Deal[]> {
@@ -158,7 +159,8 @@ export async function fetchClosedLostDeals(token: string): Promise<Deal[]> {
       filters: [
         { propertyName: `hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`, operator: "GTE", value: from },
         { propertyName: `hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`, operator: "LTE", value: to },
-        { propertyName: "pipeline", operator: "EQ", value: "default" },   // CRITICAL: default only
+        { propertyName: "pipeline", operator: "EQ", value: "default" },        // default only
+        { propertyName: "hs_v2_date_entered_appointmentscheduled", operator: "HAS_PROPERTY" }, // sales-funnel only
         ...exclusionFilter(),
       ],
     }];
@@ -207,7 +209,8 @@ export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
 }
 
 // ── Fetch 5: Active Client deals — ALL pipelines, by stage-entry date ───────────
-// FIX 2: Logging added. No pipeline filter (by design — deals move to CS pipeline).
+// No pipeline filter (by design — deals move to CS pipeline at this stage).
+// HAS_PROPERTY appointmentscheduled excludes existing clients re-entering the pipeline.
 // inMonth check in metrics ensures only the correct month is counted.
 
 export async function fetchActiveClientDeals(token: string): Promise<Deal[]> {
@@ -218,6 +221,7 @@ export async function fetchActiveClientDeals(token: string): Promise<Deal[]> {
       filters: [
         { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "GTE", value: from },
         { propertyName: `hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`, operator: "LTE", value: to },
+        { propertyName: "hs_v2_date_entered_appointmentscheduled", operator: "HAS_PROPERTY" }, // exclude re-entering existing clients
         ...exclusionFilter(),
         // No pipeline filter — deals move from default to CS pipeline at this stage
       ],
