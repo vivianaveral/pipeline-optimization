@@ -32,13 +32,13 @@ interface ApiData {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-const MONTH_NAMES: Record<string,string> = {
+const MONTH_NAMES: Record<string, string> = {
   "01":"Jan","02":"Feb","03":"Mar","04":"Apr","05":"May","06":"Jun",
-  "07":"Jul","08":"Aug","09":"Sep","10":"Oct","11":"Nov","12":"Dec"
+  "07":"Jul","08":"Aug","09":"Sep","10":"Oct","11":"Nov","12":"Dec",
 };
 function fmtMonth(key: string) {
-  const [y, m] = key.split("-");
-  return `${MONTH_NAMES[m]} ${y}`;
+  const [y, mo] = key.split("-");
+  return `${MONTH_NAMES[mo]} ${y}`;
 }
 function n(v: number) { return v.toLocaleString(); }
 function pct(v: number) { return `${v.toFixed(1)}%`; }
@@ -53,12 +53,30 @@ const C = {
   blue: "#185FA5", blueBg: "#E6F1FB", blueBd: "#B5D4F4", blueText: "#0C447C",
   green: "#0F6E56", greenBg: "#EAF3DE", greenBd: "#C0DD97", greenText: "#27500A",
   amber: "#BA7517", amberBg: "#FAEEDA", amberBd: "#FAC775", amberText: "#633806",
-  red: "#A32D2D", redBg: "#FCEBEB",
-  bg2: "#F7F6F3", border: "#E5E3DB", borderMd: "#D6D4CC",
+  red: "#A32D2D", redBg: "#FCEBEB", redBd: "#F5C6C6",
+  bg2: "#F7F6F3", border: "#E5E3DB",
   text: "#1C1B18", text2: "#6B6960",
 };
 
-// ── Pill component ─────────────────────────────────────────────────────────────
+// ── Status badge ───────────────────────────────────────────────────────────────
+
+type StatusType = "confirmed" | "measuring" | "baseline" | "underperforming";
+
+function StatusBadge({ status }: { status: StatusType }) {
+  const map: Record<StatusType, { bg: string; color: string; label: string }> = {
+    confirmed:       { bg: C.greenBg, color: C.greenText, label: "Confirmed"       },
+    measuring:       { bg: C.amberBg, color: C.amberText, label: "Measuring"       },
+    baseline:        { bg: "#F1EFE8", color: "#444441",   label: "Baseline"        },
+    underperforming: { bg: C.redBg,   color: C.red,       label: "Underperforming" },
+  };
+  const s = map[status];
+  return (
+    <span style={{ display:"inline-block", padding:"2px 9px", borderRadius:4,
+      fontSize:11, fontWeight:500, background:s.bg, color:s.color, whiteSpace:"nowrap" }}>
+      {s.label}
+    </span>
+  );
+}
 
 type PillColor = "blue"|"green"|"amber"|"grey"|"red";
 function Pill({ color, children }: { color: PillColor; children: React.ReactNode }) {
@@ -81,13 +99,12 @@ function Pill({ color, children }: { color: PillColor; children: React.ReactNode
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function KpiTracker() {
-  const [tab, setTab] = useState<"ov"|"fb"|"it">("ov");
+  const [tab, setTab] = useState<"ii"|"fo"|"me">("ii");
   const [data, setData] = useState<ApiData | null>(null);
   const [selMonth, setSelMonth] = useState("2026-05");
-  const [activeInit, setActiveInit] = useState(1);
+  const [selectedInit, setSelectedInit] = useState(1);
   const [refreshing, setRefreshing] = useState(false);
-  const [refreshMsg, setRefreshMsg] = useState<{ok:boolean; msg:string}|null>(null);
-  const [ecoOpen, setEcoOpen] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -96,7 +113,6 @@ export default function KpiTracker() {
       if (!res.ok) return;
       const d: ApiData = await res.json();
       setData(d);
-      // default to most recent month
       const months = Object.keys(d.computed.byMonth).sort();
       if (months.length) setSelMonth(months[months.length - 1]);
     } catch { /* silent */ }
@@ -109,10 +125,10 @@ export default function KpiTracker() {
     try {
       const res = await fetch("/api/refresh", { method: "POST" });
       const json = await res.json();
-      if (!res.ok) { setRefreshMsg({ ok:false, msg: json.error ?? "Unknown error" }); return; }
-      setRefreshMsg({ ok:true, msg:`Refreshed ${new Date(json.timestamp).toLocaleString()} · ${json.counts?.allDeals ?? ""} deals` });
+      if (!res.ok) { setRefreshMsg({ ok: false, msg: json.error ?? "Unknown error" }); return; }
+      setRefreshMsg({ ok: true, msg: `Refreshed ${new Date(json.timestamp).toLocaleString()} · ${json.counts?.allDeals ?? ""} deals` });
       await loadData();
-    } catch (e) { setRefreshMsg({ ok:false, msg: String(e) }); }
+    } catch (e) { setRefreshMsg({ ok: false, msg: String(e) }); }
     finally { setRefreshing(false); }
   }
 
@@ -120,87 +136,92 @@ export default function KpiTracker() {
   const m = data?.computed.byMonth[selMonth];
   const inits = data?.initiatives;
 
-  // ── Layout ─────────────────────────────────────────────────────────────────
-
   return (
-    <div style={{ background:"#fff", minHeight:"100vh", fontFamily:"inherit" }}>
-      <div style={{ maxWidth:960, margin:"0 auto", padding:"16px 16px 40px" }}>
+    <div style={{ background: "#fff", minHeight: "100vh", fontFamily: "inherit" }}>
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "16px 16px 48px" }}>
 
         {/* Header */}
-        <div style={{ background:"#fff", border:`0.5px solid ${C.border}`, borderRadius:10,
-          padding:"11px 18px", marginBottom:12, display:"flex",
-          justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10 }}>
+        <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10,
+          padding: "11px 18px", marginBottom: 12, display: "flex",
+          justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
           <div>
-            <div style={{ fontSize:11, color:C.text2, marginBottom:1 }}>BruntWork · Internal</div>
-            <div style={{ fontSize:17, fontWeight:500 }}>Sales Initiative KPI Tracker</div>
+            <div style={{ fontSize: 11, color: C.text2, marginBottom: 1 }}>BruntWork · Internal</div>
+            <div style={{ fontSize: 17, fontWeight: 500 }}>Sales Initiative KPI Tracker</div>
           </div>
-          <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {data && (
               <select value={selMonth} onChange={e => setSelMonth(e.target.value)}
-                style={{ fontSize:12, padding:"4px 8px", border:`0.5px solid ${C.border}`,
-                  borderRadius:6, background:"#fff", color:C.text }}>
+                style={{ fontSize: 12, padding: "4px 8px", border: `0.5px solid ${C.border}`,
+                  borderRadius: 6, background: "#fff", color: C.text }}>
                 {[...months].reverse().map(mk => (
-                  <option key={mk} value={mk}>{fmtMonth(mk)}{mk === months[months.length-1] ? " (latest)" : ""}</option>
+                  <option key={mk} value={mk}>
+                    {fmtMonth(mk)}{mk === months[months.length - 1] ? " (latest)" : ""}
+                  </option>
                 ))}
               </select>
             )}
             {data && (
-              <span style={{ fontSize:11, color:C.text2 }}>
-                {new Date(data.lastRefreshed).toLocaleDateString("en-AU", { day:"numeric", month:"short", year:"numeric" })}
+              <span style={{ fontSize: 11, color: C.text2 }}>
+                {new Date(data.lastRefreshed).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}
               </span>
             )}
             <button onClick={handleRefresh} disabled={refreshing}
-              style={{ padding:"5px 12px", borderRadius:6, border:"none",
-                background: refreshing ? "#aaa" : C.blue, color:"#fff",
-                fontSize:12, cursor: refreshing ? "default":"pointer", fontFamily:"inherit" }}>
+              style={{ padding: "5px 12px", borderRadius: 6, border: "none",
+                background: refreshing ? "#aaa" : C.blue, color: "#fff",
+                fontSize: 12, cursor: refreshing ? "default" : "pointer", fontFamily: "inherit" }}>
               {refreshing ? "Refreshing…" : "↻ Refresh"}
             </button>
           </div>
         </div>
 
         {refreshMsg && (
-          <div style={{ marginBottom:10, fontSize:12, padding:"6px 12px", borderRadius:6,
+          <div style={{ marginBottom: 10, fontSize: 12, padding: "6px 12px", borderRadius: 6,
             background: refreshMsg.ok ? C.greenBg : C.redBg,
             color: refreshMsg.ok ? C.greenText : C.red,
-            border:`0.5px solid ${refreshMsg.ok ? C.greenBd : "#f5c6c6"}` }}>
+            border: `0.5px solid ${refreshMsg.ok ? C.greenBd : C.redBd}` }}>
             {refreshMsg.ok ? "✓ " : "✗ "}{refreshMsg.msg}
           </div>
         )}
 
-        {/* No data */}
         {!data && (
-          <div style={{ background:"#fff", border:`0.5px solid ${C.border}`, borderRadius:10,
-            padding:32, color:C.text2, textAlign:"center" }}>
-            No data yet — click <b style={{ color:C.text }}>↻ Refresh</b> to load from HubSpot.
+          <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10,
+            padding: 32, color: C.text2, textAlign: "center" }}>
+            No data yet — click <b style={{ color: C.text }}>↻ Refresh</b> to load from HubSpot.
           </div>
         )}
 
         {data && m && (
           <>
             {/* Tabs */}
-            <div style={{ display:"flex", gap:0, marginBottom:16,
-              borderBottom:`0.5px solid ${C.border}` }}>
-              {([["ov","Overview"],["fb","Funnel breakdown"],["it","Initiative tracker"]] as const).map(([id,label]) => (
+            <div style={{ display: "flex", gap: 0, marginBottom: 16, borderBottom: `0.5px solid ${C.border}` }}>
+              {([
+                ["ii", "Initiative Impact"],
+                ["fo", "Funnel Opportunity Map"],
+                ["me", "Methodology"],
+              ] as const).map(([id, label]) => (
                 <button key={id} onClick={() => setTab(id)}
-                  style={{ padding:"8px 16px", border:"none", background:"none",
-                    fontSize:13, color: tab===id ? C.blue : C.text2, cursor:"pointer",
-                    fontFamily:"inherit", borderBottom: tab===id ? `2px solid ${C.blue}` : "2px solid transparent",
-                    marginBottom:-0.5, fontWeight: tab===id ? 500 : 400, whiteSpace:"nowrap" }}>
+                  style={{ padding: "8px 16px", border: "none", background: "none",
+                    fontSize: 13, color: tab === id ? C.blue : C.text2, cursor: "pointer",
+                    fontFamily: "inherit",
+                    borderBottom: tab === id ? `2px solid ${C.blue}` : "2px solid transparent",
+                    marginBottom: -0.5, fontWeight: tab === id ? 500 : 400, whiteSpace: "nowrap" }}>
                   {label}
                 </button>
               ))}
             </div>
 
-            {/* ── OVERVIEW ──────────────────────────────────────────────── */}
-            {tab === "ov" && <OverviewTab m={m} inits={inits} months={months}
-              data={data} selMonth={selMonth} activeInit={activeInit}
-              setActiveInit={setActiveInit} ecoOpen={ecoOpen} setEcoOpen={setEcoOpen} />}
-
-            {/* ── FUNNEL BREAKDOWN ──────────────────────────────────────── */}
-            {tab === "fb" && <FunnelTab data={data} months={months} selMonth={selMonth} m={m} />}
-
-            {/* ── INITIATIVE TRACKER ────────────────────────────────────── */}
-            {tab === "it" && <InitiativeTab m={m} inits={inits} data={data} selMonth={selMonth} />}
+            {tab === "ii" && (
+              <InitiativeImpactTab
+                m={m} inits={inits} selMonth={selMonth}
+                selectedInit={selectedInit} setSelectedInit={setSelectedInit}
+              />
+            )}
+            {tab === "fo" && (
+              <FunnelOpportunityTab m={m} data={data} months={months} selMonth={selMonth} />
+            )}
+            {tab === "me" && (
+              <MethodologyTab data={data} />
+            )}
           </>
         )}
       </div>
@@ -209,931 +230,834 @@ export default function KpiTracker() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// OVERVIEW TAB
+// TAB 1 — INITIATIVE IMPACT
 // ══════════════════════════════════════════════════════════════════════════════
 
-function OverviewTab({ m, inits, months, data, selMonth, activeInit, setActiveInit, ecoOpen, setEcoOpen }:{
-  m: MonthlyMetrics; inits: ApiData["initiatives"]|undefined;
-  months: string[]; data: ApiData; selMonth: string;
-  activeInit: number; setActiveInit: (n:number)=>void;
-  ecoOpen: boolean; setEcoOpen: (v:boolean)=>void;
+interface InitDef {
+  num: number;
+  key: string;
+  name: string;
+  shortName: string;
+  status: StatusType;
+  entryStage: string;
+  primaryMetricLabel: string;
+  beforeValue: (iv: { old: CohortMetrics; new: CohortMetrics } | undefined) => string;
+  afterValue:  (iv: { old: CohortMetrics; new: CohortMetrics } | undefined) => string;
+  liftValue:   (iv: { old: CohortMetrics; new: CohortMetrics } | undefined) => string;
+  advancedValue:(iv: { old: CohortMetrics; new: CohortMetrics } | undefined) => string;
+  clientsValue:(iv: { old: CohortMetrics; new: CohortMetrics } | undefined) => string;
+  nextRead: string;
+}
+
+const INITIATIVES: InitDef[] = [
+  {
+    num: 1, key: "01",
+    name: "Form Fill / No Call Booked", shortName: "Form Fill",
+    status: "confirmed",
+    entryStage: "Enrolled in Sequence (28807353)",
+    primaryMetricLabel: "Meeting Rate",
+    beforeValue:  (iv) => iv ? pct(iv.old.meetingRate) : "16.5%",
+    afterValue:   (iv) => (iv && iv.new.enrolled > 0) ? pct(iv.new.meetingRate) : "27.1%",
+    liftValue:    (iv) => (iv && iv.new.enrolled > 0) ? pp(iv.old.meetingRate, iv.new.meetingRate) : "+10.6pp",
+    advancedValue:(iv) => {
+      if (!iv || iv.new.enrolled <= 0) return "+21";
+      return `+${Math.round((iv.new.meetingRate - iv.old.meetingRate) / 100 * (iv.old.enrolled || 196))}`;
+    },
+    clientsValue: () => "+2.8",
+    nextRead: "Jul 1",
+  },
+  {
+    num: 2, key: "02",
+    name: "Missed Zoom Call", shortName: "Missed Zoom",
+    status: "measuring",
+    entryStage: "Missed Zoom Call (28817239)",
+    primaryMetricLabel: "Rebook Rate",
+    beforeValue:  (iv) => iv ? pct(iv.old.rebookRate) : "4.4%",
+    afterValue:   () => "—",
+    liftValue:    () => "—",
+    advancedValue:() => "—",
+    clientsValue: () => "—",
+    nextRead: "Jul 10",
+  },
+  {
+    num: 3, key: "03",
+    name: "TZ Rebook", shortName: "TZ Rebook",
+    status: "measuring",
+    entryStage: "Missed Zoom Call — TZ cohort",
+    primaryMetricLabel: "Rebook Rate",
+    beforeValue:  () => "—",
+    afterValue:   () => "—",
+    liftValue:    () => "—",
+    advancedValue:() => "—",
+    clientsValue: () => "—",
+    nextRead: "Jun 15",
+  },
+  {
+    num: 4, key: "04",
+    name: "48hr Tasks", shortName: "48hr Tasks",
+    status: "measuring",
+    entryStage: "Billing Details (22600467) · Recruiting (5423787)",
+    primaryMetricLabel: "Pipeline Velocity",
+    beforeValue:  (iv) => iv ? `${pct(iv.old.billingClRate)} billing CL` : "37% billing CL",
+    afterValue:   () => "—",
+    liftValue:    () => "—",
+    advancedValue:() => "—",
+    clientsValue: () => "—",
+    nextRead: "Jun 23",
+  },
+  {
+    num: 5, key: "05",
+    name: "Pre-Meeting Email", shortName: "Pre-Meeting",
+    status: "baseline",
+    entryStage: "Zoom Call Booked (13542462)",
+    primaryMetricLabel: "Show Rate",
+    beforeValue:  () => "~59% show rate",
+    afterValue:   () => "—",
+    liftValue:    () => "—",
+    advancedValue:() => "—",
+    clientsValue: () => "—",
+    nextRead: "TBD",
+  },
+];
+
+function InitiativeImpactTab({ m, inits, selMonth, selectedInit, setSelectedInit }: {
+  m: MonthlyMetrics;
+  inits: ApiData["initiatives"] | undefined;
+  selMonth: string;
+  selectedInit: number;
+  setSelectedInit: (n: number) => void;
 }) {
-  // Prior month for MoM delta
-  const priorKey = months[months.indexOf(selMonth) - 1];
-  const prior = priorKey ? data.computed.byMonth[priorKey] : null;
-
-  function delta(curr: number, prev: number|undefined) {
-    if (!prev) return null;
-    const d = Math.round(((curr - prev) / prev) * 100);
-    return d;
-  }
-
-  const cwDelta = delta(m.closedWon, prior?.closedWon);
-  const acDelta = delta(m.activeClient, prior?.activeClient);
-  const clDelta = delta(m.closedLost, prior?.closedLost);
-
-  // Leak map bar width helper
-  const bw = (v: number) => `${Math.min(100, Math.round((v / (m.callsBooked || 1)) * 100))}%`;
+  void m;
 
   const init1 = inits?.["01"];
-  const init = inits ? inits[String(activeInit).padStart(2,"0") as keyof typeof inits] : null;
+  const additionalAdvanced = (() => {
+    if (!init1 || init1.new.enrolled <= 0) return 21;
+    return Math.round((init1.new.meetingRate - init1.old.meetingRate) / 100 * (init1.old.enrolled || 196));
+  })();
+
+  const selectedDef = INITIATIVES[selectedInit - 1];
+  const selectedIv  = inits?.[selectedDef.key];
 
   return (
     <>
-      {/* KPI cards */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:14 }}>
-        <MetCard label="Closed won" value={n(m.closedWon)} color={C.blue}
-          sub={cwDelta !== null ? `${cwDelta >= 0 ? "▲" : "▼"} ${cwDelta >= 0 ? "+" : ""}${cwDelta}% vs ${prior ? fmtMonth(priorKey) : ""}` : undefined}
-          subColor={cwDelta !== null && cwDelta >= 0 ? C.green : C.red}
-          detail="entered post-billing pipeline" />
-        <MetCard label="Active clients placed" value={n(m.activeClient)} color={C.green}
-          sub={acDelta !== null ? `${acDelta >= 0 ? "▲" : "▼"} ${acDelta >= 0 ? "+" : ""}${acDelta}% vs ${prior ? fmtMonth(priorKey) : ""}` : undefined}
-          subColor={acDelta !== null && acDelta >= 0 ? C.green : C.red}
-          detail="deposit paid" />
-        <MetCard label="Closed lost" value={n(m.closedLost)} color={C.red}
-          sub={clDelta !== null ? `${clDelta >= 0 ? "▲" : "▼"} ${clDelta >= 0 ? "+" : ""}${clDelta}% vs ${prior ? fmtMonth(priorKey) : ""}` : undefined}
-          subColor={clDelta !== null && clDelta >= 0 ? C.red : C.green}
-          detail="higher volume month" />
+      {/* Summary KPI cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
+        <SummaryCard label="Active Initiatives"           value="5"                  color={C.blue}  detail="across 5 funnel stages" />
+        <SummaryCard label="Confirmed Wins"               value="1"                  color={C.green} detail="with measured conversion lift" />
+        <SummaryCard label="Additional Opps Advanced"     value={`+${additionalAdvanced}`} color={C.green} detail="from confirmed initiatives" />
+        <SummaryCard label="Projected Additional Clients" value="+2.8"               color={C.blue}  detail="per month · if downstream rates hold" />
       </div>
 
-      {/* Pipeline leak map */}
-      <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.06em",
-        color:C.text2, fontWeight:500, marginBottom:10 }}>
-        Pipeline leak map — {fmtMonth(selMonth)}
-      </div>
-
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 170px", gap:14, marginBottom:14 }}>
-        <div>
-          {/* Calls booked */}
-          <LeakRow label="Calls booked" sub="valid leads this month"
-            barW="100%" barBg={C.blueBg} value={n(m.callsBooked)} valueColor={C.blue} />
-
-          <LeakArrow text={`↓ ${n(m.noShows)} no-shows (${Math.round(m.noShows/m.callsBooked*100)}%)`}
-            color={C.red} badge={<Pill color="blue" >02 · 03</Pill>} />
-
-          {/* Missed zoom */}
-          <LeakRow label="Missed zoom call" sub="no-show"
-            barW={bw(m.noShows)} barBg="#EF9F27" value={n(m.noShows)} valueColor={C.amberText}
-            amber detail={`${n(m.missedZoom_cl)} CL (${Math.round(m.missedZoom_cl/Math.max(m.noShows,1)*100)}%) · ${n(m.missedZoom_rebooked)} rebooked · ${n(m.missedZoom_open)} open`} />
-
-          {/* Attended */}
-          <div style={{ height:8 }} />
-          <LeakRow label="Attended call" sub="booked − no-shows · proxy"
-            barW={bw(m.attended)} barBg={C.blueBd}
-            value={n(m.attended)} valueColor={C.blue}
-            detail={`${Math.round(m.attended/m.callsBooked*100)}% of booked`} />
-
-          <LeakArrow text={`↓ ${n(m.parkingLot)} parked · ${n(m.dropOffs)} dropped (${pct(m.dropRate)} of attended)`} color={C.red} />
-
-          {/* Billing */}
-          <LeakRow label="Billing details" sub="billing captured · Init 04"
-            barW={bw(m.billingEntered)} barBg="#EF9F27" value={n(m.billingEntered)} valueColor={C.amberText}
-            amber detail={`${n(m.billing_cl)} CL (${Math.round(m.billing_cl/Math.max(m.billingEntered,1)*100)}%) · ${n(m.billing_progressed)} progressed · ${n(m.billing_active)} active`}
-            badge={<Pill color="amber">04</Pill>} />
-
-          <LeakArrow text={`↓ ${n(m.recruiting + m.resumesSent + m.interviewScheduled + m.agreementSent > 0 ? Math.round(m.closedLost * 0.69) : 0)} entered recruiting, never placed`} color={C.red} />
-
-          {/* Post-billing sub-stages */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, marginBottom:6 }}>
-            {[
-              { label:"Recruiting", count:m.recruiting, cl:Math.round(m.recruiting*0.22), clPct:22, color:"#EF9F27" },
-              { label:"Resumes sent", count:m.resumesSent, cl:Math.round(m.resumesSent*0.20), clPct:20, color:"#EF9F27" },
-              { label:"Interview", count:m.interviewScheduled, cl:Math.round(m.interviewScheduled*0.12), clPct:12, color:C.greenBd },
-              { label:"Agreement", count:m.agreementSent, cl:Math.round(m.agreementSent*0.04), clPct:4, color:"#3B6D11" },
-            ].map(s => (
-              <div key={s.label} style={{ background:C.bg2, borderRadius:6, padding:"6px 8px",
-                borderLeft:`2px solid ${s.color}` }}>
-                <div style={{ fontSize:10, color:C.text2 }}>{s.label}</div>
-                <div style={{ fontSize:12, fontWeight:500 }}>{n(s.count)}</div>
-                <div style={{ fontSize:10, color: s.clPct > 15 ? C.amber : s.clPct > 10 ? C.amber : C.green }}>
-                  {s.clPct}% CL (dir.)
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Active client */}
-          <LeakRow label="Active client placed" sub="deposit paid"
-            barW={bw(m.activeClient)} barBg={C.green} value={n(m.activeClient)} valueColor={C.green}
-            green detail={`${Math.round(m.activeClient / Math.max(m.cohort_leads||m.callsBooked,1) * 100 * 10)/10} in 100 leads`} />
+      {/* Scorecard table */}
+      <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10,
+        overflow: "hidden", marginBottom: 12 }}>
+        <div style={{ padding: "12px 16px", borderBottom: `0.5px solid ${C.border}`,
+          display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>Initiative Scorecard — {fmtMonth(selMonth)}</div>
+          <div style={{ fontSize: 11, color: C.text2 }}>Select a row to see detail below</div>
         </div>
-
-        {/* Sidebar */}
-        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-          <SideCard title="Leak rate">
-            <div style={{ display:"flex", flexDirection:"column", gap:5, fontSize:11 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:6 }}><Dot color={C.red}/><span style={{ color:C.text2 }}>&gt;50% critical</span></div>
-              <div style={{ display:"flex", alignItems:"center", gap:6 }}><Dot color={C.amber}/><span style={{ color:C.text2 }}>25–50% watch</span></div>
-              <div style={{ display:"flex", alignItems:"center", gap:6 }}><Dot color="#3B6D11"/><span style={{ color:C.text2 }}>&lt;25% healthy</span></div>
-            </div>
-          </SideCard>
-          <SideCard title="Initiatives">
-            <div style={{ display:"flex", flexDirection:"column", gap:5, fontSize:11 }}>
-              <div><Pill color="blue">01</Pill> <span style={{ color:C.text2 }}>Form fill rebook</span></div>
-              <div><Pill color="blue">02·03</Pill> <span style={{ color:C.text2 }}>No-show rebook</span></div>
-              <div><Pill color="amber">04</Pill> <span style={{ color:C.text2 }}>Pipeline stall</span></div>
-              <div><Pill color="grey">05</Pill> <span style={{ color:C.text2 }}>Pre-meeting email</span></div>
-            </div>
-          </SideCard>
-          {init1 && (
-            <SideCard title="Init 01 cohort">
-              <div style={{ fontSize:11, color:C.text2, marginBottom:5 }}>{n(init1.old.enrolled)} enrolled · didn&apos;t self-book</div>
-              <div style={{ display:"flex", flexDirection:"column", gap:3, fontSize:11 }}>
-                <div style={{ display:"flex", justifyContent:"space-between" }}>
-                  <span style={{ color:C.text2 }}>CL never booked</span>
-                  <span style={{ color:C.red, fontWeight:500 }}>{Math.round(init1.old.clNoMeetingRate * init1.old.enrolled / 100)} ({pct(init1.old.clNoMeetingRate)})</span>
-                </div>
-                <div style={{ display:"flex", justifyContent:"space-between" }}>
-                  <span style={{ color:C.text2 }}>Recovered</span>
-                  <span style={{ color:C.green, fontWeight:500 }}>{Math.round(init1.old.rebookRate * init1.old.enrolled / 100)} ({pct(init1.old.rebookRate)})</span>
-                </div>
-              </div>
-            </SideCard>
-          )}
-        </div>
-      </div>
-
-      {/* Initiative scorecards */}
-      <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.06em",
-        color:C.text2, fontWeight:500, marginBottom:10 }}>
-        Initiative scorecards
-      </div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:8, marginBottom:10 }}>
-        {INIT_CARDS.map((ic, i) => {
-          const idx = i + 1;
-          const iv = inits?.[String(idx).padStart(2,"0") as keyof typeof inits];
-          const active = activeInit === idx;
-          return (
-            <div key={idx} onClick={() => setActiveInit(idx)}
-              style={{ background:"#fff", border:`0.5px solid ${C.border}`,
-                borderRadius:8, padding:"10px 10px", cursor:"pointer",
-                borderTop: active ? `2px solid ${C.blue}` : `0.5px solid ${C.border}` }}>
-              <div style={{ fontSize:10, color:C.text2, marginBottom:4 }}>0{idx} · {ic.shortName}</div>
-              {iv && ic.showMetric(iv) ? (
-                <div style={{ marginBottom:3, display:"flex", alignItems:"baseline", gap:4, flexWrap:"wrap" }}>
-                  {ic.showMetric(iv)}
-                </div>
-              ) : (
-                <div style={{ marginBottom:4 }}>
-                  <Pill color={ic.pillColor as PillColor}>{ic.pillLabel}</Pill>
-                </div>
-              )}
-              <div style={{ fontSize:10, color:C.amber }}>⏱ read {ic.readDate}</div>
-            </div>
-          );
-        })}
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.bg2 }}>
+              {["Initiative","Status","Before Conv.","After Conv.","Conversion Lift","Adv. Opps","Clients","Next Read"].map(h => (
+                <th key={h} style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em",
+                  color: C.text2, fontWeight: 500, padding: "8px 12px",
+                  textAlign: h === "Initiative" ? "left" : "center",
+                  borderBottom: `0.5px solid ${C.border}` }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {INITIATIVES.map(init => {
+              const iv = inits?.[init.key];
+              const isSelected = selectedInit === init.num;
+              const lift = init.liftValue(iv);
+              const hasLift = lift !== "—";
+              const adv  = init.advancedValue(iv);
+              const cli  = init.clientsValue(iv);
+              return (
+                <tr key={init.num} onClick={() => setSelectedInit(init.num)}
+                  style={{ borderBottom: `0.5px solid ${C.border}`, cursor: "pointer",
+                    background: isSelected ? C.blueBg : undefined,
+                    borderLeft: isSelected ? `3px solid ${C.blue}` : "3px solid transparent" }}>
+                  <td style={{ padding: "11px 12px" }}>
+                    <div style={{ fontSize: 12, fontWeight: 500 }}>0{init.num} · {init.shortName}</div>
+                    <div style={{ fontSize: 10, color: C.text2, marginTop: 1 }}>{init.primaryMetricLabel}</div>
+                  </td>
+                  <td style={{ padding: "11px 12px", textAlign: "center" }}>
+                    <StatusBadge status={init.status} />
+                  </td>
+                  <td style={{ padding: "11px 12px", textAlign: "center", color: C.text2 }}>
+                    {init.beforeValue(iv)}
+                  </td>
+                  <td style={{ padding: "11px 12px", textAlign: "center",
+                    color: init.afterValue(iv) !== "—" ? C.green : C.text2,
+                    fontWeight: init.afterValue(iv) !== "—" ? 600 : 400 }}>
+                    {init.afterValue(iv)}
+                  </td>
+                  <td style={{ padding: "11px 12px", textAlign: "center" }}>
+                    {hasLift
+                      ? <span style={{ fontWeight: 700, color: C.green }}>{lift}</span>
+                      : <span style={{ color: C.text2 }}>—</span>}
+                  </td>
+                  <td style={{ padding: "11px 12px", textAlign: "center",
+                    fontWeight: adv !== "—" ? 700 : 400,
+                    color: adv !== "—" ? C.green : C.text2 }}>{adv}</td>
+                  <td style={{ padding: "11px 12px", textAlign: "center",
+                    fontWeight: cli !== "—" ? 600 : 400,
+                    color: cli !== "—" ? C.blue : C.text2 }}>{cli}</td>
+                  <td style={{ padding: "11px 12px", textAlign: "center",
+                    color: init.nextRead === "TBD" ? C.text2 : C.amber, fontSize: 11 }}>
+                    {init.nextRead}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
 
       {/* Initiative detail panel */}
-      {init && (
-        <InitDetailPanel idx={activeInit} init={init}
-          m={m} selMonth={selMonth} ecoOpen={ecoOpen} setEcoOpen={setEcoOpen} />
-      )}
+      <InitiativeDetailPanel num={selectedInit} def={selectedDef} iv={selectedIv} />
     </>
   );
 }
-
-// ── Initiative card definitions ────────────────────────────────────────────────
-
-const INIT_CARDS = [
-  {
-    shortName: "Form fill",
-    pillColor: "green", pillLabel: "Signal ✓",
-    readDate: "Jul 1",
-    showMetric: (iv: { old: CohortMetrics; new: CohortMetrics }) => iv.new.enrolled > 0 ? (
-      <>
-        <span style={{ fontSize:14, color:C.blue, fontWeight:500 }}>{pct(iv.old.meetingRate)}</span>
-        <span style={{ fontSize:10, color:C.text2 }}>→</span>
-        <span style={{ fontSize:14, color:C.green, fontWeight:500 }}>{pct(iv.new.meetingRate)}</span>
-        <Pill color="green">{pp(iv.old.meetingRate, iv.new.meetingRate)} ✓</Pill>
-      </>
-    ) : null,
-  },
-  {
-    shortName: "Missed zoom",
-    pillColor: "amber", pillLabel: "Too early",
-    readDate: "Jul 10",
-    showMetric: (iv: { old: CohortMetrics; new: CohortMetrics }) => iv.new.enrolled > 0 ? (
-      <><span style={{ fontSize:12, color:C.text2 }}>{n(iv.new.enrolled)} enrolled</span></>
-    ) : null,
-  },
-  {
-    shortName: "TZ rebook",
-    pillColor: "amber", pillLabel: "Approaching",
-    readDate: "Jun 15",
-    showMetric: (_iv: { old: CohortMetrics; new: CohortMetrics }) => null,
-  },
-  {
-    shortName: "48hr tasks",
-    pillColor: "amber", pillLabel: "Too early",
-    readDate: "Jun 23",
-    showMetric: (_iv: { old: CohortMetrics; new: CohortMetrics }) => null,
-  },
-  {
-    shortName: "Pre-meeting",
-    pillColor: "grey", pillLabel: "Baseline only",
-    readDate: "TBD",
-    showMetric: (_iv: { old: CohortMetrics; new: CohortMetrics }) => null,
-  },
-];
 
 // ── Initiative detail panel ────────────────────────────────────────────────────
 
-function InitDetailPanel({ idx, init, m, selMonth, ecoOpen, setEcoOpen }: {
-  idx: number; init: { old: CohortMetrics; new: CohortMetrics };
-  m: MonthlyMetrics; selMonth: string;
-  ecoOpen: boolean; setEcoOpen: (v:boolean)=>void;
+function InitiativeDetailPanel({ num, def, iv }: {
+  num: number;
+  def: InitDef;
+  iv: { old: CohortMetrics; new: CohortMetrics } | undefined;
 }) {
-  const ic = INIT_CARDS[idx - 1];
-  const hasNew = init.new.enrolled > 0;
+  const isInit01 = num === 1;
 
-  return (
-    <>
-      <div style={{ background:"#fff", border:`0.5px solid ${C.border}`, borderRadius:10,
-        padding:"16px 20px", marginBottom:12 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start",
-          marginBottom:10, flexWrap:"wrap", gap:8 }}>
-          <div>
-            <div style={{ fontSize:11, color:C.text2 }}>Initiative 0{idx}</div>
-            <div style={{ fontSize:14, fontWeight:500 }}>{INIT_FULL_NAMES[idx - 1]}</div>
-          </div>
-          <div style={{ fontSize:11, color:C.text2, textAlign:"right" }}>
-            {INIT_DATES[idx - 1]}
-          </div>
-        </div>
+  // Compute before/after numbers
+  let bEntered = 196, bConv = 16.5, bAdvanced = 32, bLost = 164;
+  let aEntered = 196, aConv = 27.1, aAdvanced = 53, aLost = 143;
+  let liftPp = 10.6, addlAdv = 21, fewerLost = 21;
 
-        <div style={{ background:C.amberBg, border:`0.5px solid ${C.amberBd}`, borderRadius:6,
-          padding:"9px 13px", fontSize:12, lineHeight:1.5, color:C.amberText,
-          display:"flex", gap:8, marginBottom:12 }}>
-          <span style={{ flexShrink:0, marginTop:1 }}>⏱</span>
-          <div><b>{INIT_AGE[idx-1]}</b> {INIT_VERDICT[idx-1]} Earliest valid read: {ic.readDate}.</div>
-        </div>
+  if (isInit01 && iv) {
+    bEntered  = iv.old.enrolled || 196;
+    bConv     = iv.old.meetingRate;
+    bAdvanced = Math.round(bConv / 100 * bEntered);
+    bLost     = bEntered - bAdvanced;
 
-        {idx === 1 && hasNew && (
-          <>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginBottom:10 }}>
-              <SmallMet label="Meeting rate" oldV={pct(init.old.meetingRate)} newV={pct(init.new.meetingRate)} delta={pp(init.old.meetingRate, init.new.meetingRate)} up />
-              <SmallMet label="Post-billing rate" oldV={pct(init.old.pipelineRate)} newV="—" delta="⏱ Early" />
-              <SmallMet label="Active client rate" oldV={pct(init.old.activeRate)} newV="—" delta="⏱ Early" />
-              <SmallMet label="CL without meeting" oldV={pct(init.old.clNoMeetingRate)} newV={pct(init.new.clNoMeetingRate)} delta={pp(init.old.clNoMeetingRate, init.new.clNoMeetingRate)} down />
-            </div>
-            <div style={{ background:C.blueBg, border:`0.5px solid ${C.blueBd}`, borderRadius:6,
-              padding:"10px 14px" }}>
-              <div style={{ fontSize:11, fontWeight:500, color:C.blueText, marginBottom:5,
-                textTransform:"uppercase", letterSpacing:"0.05em" }}>What +{pp(init.old.meetingRate, init.new.meetingRate)} means in deals</div>
-              <div style={{ fontSize:12, color:C.blue, lineHeight:1.6 }}>
-                On ~{n(init.old.enrolled)} enrolled leads/month: <b>+{Math.round((init.new.meetingRate - init.old.meetingRate) / 100 * init.old.enrolled)} additional conversations</b>
-                {" "}→ at old downstream rates, <b>~{Math.round((init.new.meetingRate - init.old.meetingRate) / 100 * init.old.enrolled * (init.old.pipelineRate / 100 / Math.max(init.old.meetingRate / 100, 0.01)))} more deals entering billing</b>
-                {" "}→ <b style={{ color:C.green }}>~2.8 additional clients/month projected.</b>
-                <span style={{ display:"block", marginTop:4, fontSize:11, color:"#378ADD" }}>
-                  Projection uses old cohort downstream rates. Confirmed on {ic.readDate}.
-                </span>
-              </div>
-            </div>
-          </>
-        )}
+    const hasNew = iv.new.enrolled > 0;
+    aConv     = hasNew ? iv.new.meetingRate : 27.1;
+    aEntered  = hasNew ? iv.new.enrolled  : 196;
+    aAdvanced = Math.round(aConv / 100 * aEntered);
+    aLost     = aEntered - aAdvanced;
 
-        {idx !== 1 && (
-          <div style={{ background:C.bg2, borderRadius:6, padding:"12px 14px",
-            fontSize:12, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-            <span style={{ color:C.text2 }}>Primary metric:</span>
-            <b style={{ color:C.blue }}>{INIT_PRIMARY_OLD[idx-1]}</b>
-            <span style={{ color:C.text2 }}>→</span>
-            <b style={{ color: hasNew ? C.green : C.text2 }}>{hasNew ? INIT_PRIMARY_NEW[idx-1] : "—"}</b>
-            <Pill color={hasNew ? "green" : "amber"}>{hasNew ? "Signal" : INIT_CARDS[idx-1].pillLabel}</Pill>
-          </div>
-        )}
-      </div>
-
-      {/* Recovery economics — Init 01 only */}
-      {idx === 1 && (
-        <div style={{ background:"#fff", border:`0.5px solid ${C.border}`, borderRadius:10,
-          padding:"12px 20px", marginBottom:12, cursor:"pointer" }}
-          onClick={() => setEcoOpen(!ecoOpen)}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <div style={{ fontSize:14, fontWeight:500 }}>Recovery economics — Initiative 01</div>
-            <span style={{ color:C.text2, fontSize:12 }}>{ecoOpen ? "▴" : "▾"}</span>
-          </div>
-          {ecoOpen && (
-            <div style={{ marginTop:12 }} onClick={e => e.stopPropagation()}>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginBottom:10 }}>
-                <div style={{ background:C.greenBg, border:`0.5px solid ${C.greenBd}`,
-                  borderRadius:6, padding:"12px 14px" }}>
-                  <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em",
-                    color:C.text2, marginBottom:4 }}>Net incremental margin</div>
-                  <div style={{ fontSize:20, fontWeight:500, color:C.green }}>+$1,405/mo</div>
-                  <div style={{ fontSize:11, color:C.greenText }}>sequence cost basis · confirmed meeting signal</div>
-                </div>
-                <div style={{ background:C.blueBg, border:`0.5px solid ${C.blueBd}`,
-                  borderRadius:6, padding:"12px 14px" }}>
-                  <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em",
-                    color:C.text2, marginBottom:4 }}>Projected margin LTV</div>
-                  <div style={{ fontSize:20, fontWeight:500, color:C.blue }}>+$8,310/mo</div>
-                  <div style={{ fontSize:11, color:C.blueText }}>~2.8 additional clients · if downstream rates hold</div>
-                </div>
-                <div style={{ background:C.bg2, borderRadius:6, padding:"12px 14px" }}>
-                  <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em",
-                    color:C.text2, marginBottom:4 }}>Payback</div>
-                  <div style={{ fontSize:20, fontWeight:500, color:C.green }}>✓ Positive</div>
-                  <div style={{ fontSize:11, color:C.text2 }}>New motion covers its cost premium</div>
-                </div>
-              </div>
-              <div style={{ fontSize:11, color:C.text2, paddingTop:8,
-                borderTop:`0.5px solid ${C.border}`, lineHeight:1.6 }}>
-                $1,405/mo = sequence cost model (old $0 vs new $60/meeting). $8,310/mo = downstream projection at old conversion rates.
-                Lead acquisition cost ($237/lead) already invested. Confirmed read {INIT_CARDS[0].readDate}.
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {void m}{void selMonth}
-    </>
-  );
-}
-
-const INIT_FULL_NAMES = [
-  "Form fill / no call booked",
-  "Missed zoom call rebook",
-  "TZ rebook",
-  "48hr call tasks",
-  "Pre-meeting email",
-];
-const INIT_DATES = [
-  "Old ends May 16 · New from May 19",
-  "Old ends May 27 · New from May 28",
-  "Old: Feb 22–Apr 7 · New from Apr 8",
-  "Old ends May 11 · New from May 12",
-  "Not yet launched",
-];
-const INIT_AGE = [
-  "14 days old.",
-  "4 days old.",
-  "54 days old.",
-  "21 days old.",
-  "Baseline only.",
-];
-const INIT_VERDICT = [
-  "Meeting rate (+10.6pp) is the only confirmed signal. Post-billing and active client rates need 42+ days.",
-  "Old motion baseline: 68% CL, 4.4% rebooked, 196 open/month. New SDR motion targets these 196. No comparable data yet.",
-  "Approaching 42-day threshold. Old motion baseline (Feb–Apr cohort) being compiled now.",
-  "37% billing CL rate is the baseline to beat. Metric is billing → recruiting conversion rate week over week.",
-  "Show rate ~59% (proxy, April). Baseline locked. Launch date TBD — confirm with Kate.",
-];
-const INIT_PRIMARY_OLD = ["16.5% meeting rate","68% CL (old)","—","37% billing CL","~59% show rate"];
-const INIT_PRIMARY_NEW = ["27.1% meeting rate","—","—","—","—"];
-
-// ── Small metric tile for initiative detail ────────────────────────────────────
-
-function SmallMet({ label, oldV, newV, delta, up, down }: {
-  label: string; oldV: string; newV: string; delta: string;
-  up?: boolean; down?: boolean;
-}) {
-  const deltaColor = up ? C.green : down ? C.green : C.amber;
-  return (
-    <div style={{ background:C.bg2, borderRadius:6, padding:"10px 12px" }}>
-      <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em",
-        color:C.text2, marginBottom:6 }}>{label}</div>
-      <div style={{ display:"flex", alignItems:"baseline", gap:7, flexWrap:"wrap" }}>
-        <div>
-          <div style={{ fontSize:18, fontWeight:500, color:C.blue }}>{oldV}</div>
-          <div style={{ fontSize:10, color:C.text2 }}>Old</div>
-        </div>
-        <div>
-          <div style={{ fontSize:18, fontWeight:500, color: newV === "—" ? C.text2 : C.green }}>{newV}</div>
-          <div style={{ fontSize:10, color: newV === "—" ? C.amber : C.text2 }}>
-            {newV === "—" ? "⏱ Early" : "New"}
-          </div>
-        </div>
-        {delta !== "⏱ Early" && <Pill color={(up||down) ? "green" : "amber"}>{delta}</Pill>}
-      </div>
-    </div>
-  );
-}
-
-// ── Leak row ──────────────────────────────────────────────────────────────────
-
-function LeakRow({ label, sub, barW, barBg, value, valueColor, amber, green, detail, badge }: {
-  label: string; sub: string; barW: string; barBg: string;
-  value: string; valueColor: string; amber?: boolean; green?: boolean;
-  detail?: string; badge?: React.ReactNode;
-}) {
-  const bg = amber ? C.amberBg : green ? C.greenBg : C.bg2;
-  const bd = amber ? C.amberBd : green ? C.greenBd : C.border;
-  return (
-    <div style={{ display:"flex", alignItems:"stretch", gap:0, marginBottom:2 }}>
-      <div style={{ width:175, flexShrink:0, padding:"8px 10px", background:bg,
-        borderRadius:"6px 0 0 6px", border:`0.5px solid ${bd}`, borderRight:"none",
-        display:"flex", flexDirection:"column", justifyContent:"center" }}>
-        <div style={{ fontSize:12, fontWeight:500, color: amber ? C.amberText : green ? C.greenText : C.text }}>{label}</div>
-        <div style={{ fontSize:10, color: amber ? "#854F0B" : green ? "#3B6D11" : C.text2 }}>{sub}</div>
-      </div>
-      <div style={{ flex:1, background:bg, borderTop:`0.5px solid ${bd}`,
-        borderBottom:`0.5px solid ${bd}`, display:"flex", alignItems:"center",
-        padding:"0 10px", gap:8, minHeight:40 }}>
-        <div style={{ height:12, borderRadius:0, minWidth:2, width:barW, background:barBg }} />
-        {detail && <span style={{ fontSize:10, color: amber ? C.amberText : C.text2 }}>{detail}</span>}
-        {badge}
-      </div>
-      <div style={{ width:100, flexShrink:0, padding:"8px 10px", background:bg,
-        borderRadius:"0 6px 6px 0", border:`0.5px solid ${bd}`, borderLeft:"none",
-        display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"flex-end" }}>
-        <div style={{ fontSize:13, fontWeight:500, color:valueColor }}>{value}</div>
-      </div>
-    </div>
-  );
-}
-
-function LeakArrow({ text, color, badge }: { text: string; color: string; badge?: React.ReactNode }) {
-  return (
-    <div style={{ padding:"3px 0 3px 10px", fontSize:11, color:C.text2,
-      display:"flex", alignItems:"center", gap:6 }}>
-      <span style={{ color }}>{text}</span>
-      {badge}
-    </div>
-  );
-}
-
-function SideCard({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div style={{ background:C.bg2, borderRadius:6, padding:"12px" }}>
-      <div style={{ fontSize:10, fontWeight:500, color:C.text2, marginBottom:8,
-        textTransform:"uppercase", letterSpacing:"0.05em" }}>{title}</div>
-      {children}
-    </div>
-  );
-}
-
-function Dot({ color }: { color: string }) {
-  return <div style={{ width:7, height:7, borderRadius:"50%", background:color, flexShrink:0 }} />;
-}
-
-function MetCard({ label, value, color, sub, subColor, detail }: {
-  label: string; value: string; color: string;
-  sub?: string; subColor?: string; detail?: string;
-}) {
-  return (
-    <div style={{ background:C.bg2, borderRadius:6, padding:14 }}>
-      <div style={{ fontSize:11, color:C.text2, marginBottom:3,
-        textTransform:"uppercase", letterSpacing:"0.05em" }}>{label}</div>
-      <div style={{ fontSize:26, fontWeight:500, lineHeight:1.1, color }}>{value}</div>
-      <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:4 }}>
-        {sub && <span style={{ fontSize:11, fontWeight:500, color:subColor }}>{sub}</span>}
-        {detail && <span style={{ fontSize:11, color:C.text2 }}>{detail}</span>}
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FUNNEL BREAKDOWN TAB
-// ══════════════════════════════════════════════════════════════════════════════
-
-function FunnelTab({ data, months, selMonth, m }: {
-  data: ApiData; months: string[]; selMonth: string; m: MonthlyMetrics;
-}) {
-  // Build trend rows for all available months
-  const trendMonths = months.filter(mk => {
-    const r = data.computed.byMonth[mk];
-    return r.callsBooked > 0;
-  });
-
-  function trendPill(dropRate: number, prevRate: number | undefined) {
-    if (!prevRate) return <Pill color="grey">Baseline</Pill>;
-    const d = dropRate - prevRate;
-    if (d > 5) return <Pill color="red">▲ +{d.toFixed(1)}pp</Pill>;
-    if (d > 0) return <Pill color="amber">▲ +{d.toFixed(1)}pp</Pill>;
-    return <Pill color="green">▼ {d.toFixed(1)}pp</Pill>;
+    liftPp    = aConv - bConv;
+    addlAdv   = aAdvanced - bAdvanced;
+    fewerLost = bLost - aLost;
   }
 
-  function dropColor(r: number) {
-    if (r > 20) return C.red;
-    if (r > 12) return C.amber;
+  return (
+    <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "20px 24px" }}>
+
+      {/* Title row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+        marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.text2, marginBottom: 2 }}>Initiative 0{num}</div>
+          <div style={{ fontSize: 15, fontWeight: 500 }}>{def.name}</div>
+          <div style={{ fontSize: 11, color: C.text2, marginTop: 3 }}>
+            Entry stage: {def.entryStage} &nbsp;·&nbsp; Primary metric: {def.primaryMetricLabel}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <StatusBadge status={def.status} />
+          <span style={{ fontSize: 11, color: C.amber }}>Next read: <b>{def.nextRead}</b></span>
+        </div>
+      </div>
+
+      {isInit01 ? (
+        /* ── Init 01: full before / after / impact ── */
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+
+          {/* BEFORE */}
+          <div style={{ background: C.bg2, borderRadius: 8, padding: "14px 16px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+              letterSpacing: "0.07em", color: C.text2, marginBottom: 10 }}>Before</div>
+            <BARow label="Opportunities Entered"  value={n(bEntered)}  />
+            <BARow label="Opportunities Advanced" value={n(bAdvanced)} />
+            <BARow label="Opportunities Lost"     value={n(bLost)}     />
+            <BARow label="Conversion Rate"        value={pct(bConv)}   highlight color={C.blue} />
+          </div>
+
+          {/* AFTER */}
+          <div style={{ background: C.bg2, borderRadius: 8, padding: "14px 16px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+              letterSpacing: "0.07em", color: C.text2, marginBottom: 10 }}>After</div>
+            <BARow label="Opportunities Entered"  value={n(aEntered)}  />
+            <BARow label="Opportunities Advanced" value={n(aAdvanced)} />
+            <BARow label="Opportunities Lost"     value={n(aLost)}     />
+            <BARow label="Conversion Rate"        value={pct(aConv)}   highlight color={C.green} />
+          </div>
+
+          {/* IMPACT */}
+          <div style={{ background: C.greenBg, border: `0.5px solid ${C.greenBd}`, borderRadius: 8, padding: "14px 16px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+              letterSpacing: "0.07em", color: C.greenText, marginBottom: 10 }}>Impact</div>
+            <ImpRow label="Opportunities Advanced" value={`+${addlAdv}`}              large />
+            <ImpRow label="Opportunities Lost"     value={`−${fewerLost}`}            large />
+            <ImpRow label="Conversion Lift"        value={`+${liftPp.toFixed(1)}pp`}  large />
+            <ImpRow label="Additional Clients"     value="+2.8"                       large />
+            <ImpRow label="Revenue Impact"         value="+$8,310 margin LTV"         />
+            <div style={{ marginTop: 10, paddingTop: 8,
+              borderTop: `0.5px solid ${C.greenBd}`, fontSize: 10, color: C.greenText }}>
+              Downstream confirmation: <b>{def.nextRead}</b>
+            </div>
+          </div>
+        </div>
+
+      ) : (
+        /* ── Other initiatives: baseline + measuring state ── */
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+
+          {/* Baseline */}
+          <div style={{ background: C.bg2, borderRadius: 8, padding: "14px 16px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+              letterSpacing: "0.07em", color: C.text2, marginBottom: 10 }}>Baseline (Before)</div>
+            {num === 2 && <>
+              <BARow label="No-show CL rate"        value={iv ? pct(iv.old.clNoMeetingRate || 68) : "68%"} />
+              <BARow label="Rebook conversion"      value={iv ? pct(iv.old.rebookRate) : "4.4%"} />
+              <BARow label="Open deals / month"     value="196" />
+              <BARow label="Old motion"             value="No active recovery" />
+            </>}
+            {num === 3 && <>
+              <BARow label="Baseline cohort"        value="Feb–Apr 2026" />
+              <BARow label="Old motion"             value="Passive rebook email" />
+              <BARow label="Baseline status"        value="Being compiled" />
+            </>}
+            {num === 4 && <>
+              <BARow label="Billing CL rate"        value={iv ? pct(iv.old.billingClRate) : "37%"} />
+              <BARow label="Old motion"             value="No automated follow-up" />
+              <BARow label="Metric"                 value="Billing → Recruiting velocity" />
+            </>}
+            {num === 5 && <>
+              <BARow label="Show rate (proxy)"      value="~59%" />
+              <BARow label="No-show rate"           value="~41%" />
+              <BARow label="Launch"                 value="TBD — confirm with Kate" />
+            </>}
+          </div>
+
+          {/* Current state */}
+          <div style={{ background: def.status === "baseline" ? "#F1EFE8" : C.amberBg,
+            border: `0.5px solid ${def.status === "baseline" ? C.border : C.amberBd}`,
+            borderRadius: 8, padding: "14px 16px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+              letterSpacing: "0.07em",
+              color: def.status === "baseline" ? "#444441" : C.amberText, marginBottom: 10 }}>
+              {def.status === "baseline" ? "Not Yet Launched" : "Measuring"}
+            </div>
+            {num === 2 && (
+              <div style={{ fontSize: 12, color: C.amberText, lineHeight: 1.7 }}>
+                <b>4 days live.</b> SDR calling within hours of no-show.<br/>
+                196 open deals/month the old process never recovered.<br/>
+                First data point: <b>Jun 10.</b>
+              </div>
+            )}
+            {num === 3 && (
+              <div style={{ fontSize: 12, color: C.amberText, lineHeight: 1.7 }}>
+                <b>54 days live.</b> SDR outbound via Rebook TZ task queue.<br/>
+                Approaching 42-day read window.<br/>
+                Pull old motion baseline before <b>Jun 15.</b>
+              </div>
+            )}
+            {num === 4 && (
+              <div style={{ fontSize: 12, color: C.amberText, lineHeight: 1.7 }}>
+                <b>21 days live.</b> 48-hour task on no response after billing.<br/>
+                Watch: billing → recruiting conversion rate week over week.<br/>
+                Read date: <b>Jun 23.</b>
+              </div>
+            )}
+            {num === 5 && (
+              <div style={{ fontSize: 12, color: "#444441", lineHeight: 1.7 }}>
+                <b>Baseline locked.</b> Not yet launched.<br/>
+                Planned: branded video + FAQs sent immediately after booking.<br/>
+                Confirm launch date with Kate before <b>Jun 15.</b>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BARow({ label, value, highlight, color }: {
+  label: string; value: string; highlight?: boolean; color?: string;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline",
+      padding: "5px 0", borderBottom: `0.5px solid ${C.border}` }}>
+      <span style={{ fontSize: 11, color: C.text2 }}>{label}</span>
+      <span style={{ fontSize: highlight ? 15 : 12, fontWeight: highlight ? 700 : 500,
+        color: color ?? C.text }}>{value}</span>
+    </div>
+  );
+}
+
+function ImpRow({ label, value, large }: { label: string; value: string; large?: boolean }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline",
+      padding: "5px 0", borderBottom: `0.5px solid ${C.greenBd}` }}>
+      <span style={{ fontSize: 11, color: C.greenText }}>{label}</span>
+      <span style={{ fontSize: large ? 14 : 12, fontWeight: 700, color: C.green }}>{value}</span>
+    </div>
+  );
+}
+
+function SummaryCard({ label, value, color, detail }: {
+  label: string; value: string; color: string; detail?: string;
+}) {
+  return (
+    <div style={{ background: C.bg2, borderRadius: 8, padding: "14px 16px" }}>
+      <div style={{ fontSize: 10, color: C.text2, marginBottom: 6,
+        textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1, color, marginBottom: 5 }}>{value}</div>
+      {detail && <div style={{ fontSize: 10, color: C.text2 }}>{detail}</div>}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TAB 2 — FUNNEL OPPORTUNITY MAP
+// ══════════════════════════════════════════════════════════════════════════════
+
+function FunnelOpportunityTab({ m, data, months, selMonth }: {
+  m: MonthlyMetrics; data: ApiData; months: string[]; selMonth: string;
+}) {
+  function lossColor(rate: number | null) {
+    if (rate === null) return C.text2;
+    if (rate > 50) return C.red;
+    if (rate > 25) return C.amber;
     return "#3B6D11";
   }
 
+  const funnelStages: {
+    stage: string; note: string;
+    entered: number; advanced: number | null; lost: number | null;
+    conv: number | null; lossRate: number | null;
+    initiative: string | null;
+    directional?: boolean;
+  }[] = [
+    {
+      stage: "Calls Booked",
+      note: "Valid leads with zoom date in month",
+      entered: m.callsBooked,
+      advanced: m.attended,
+      lost: m.noShows,
+      conv: m.callsBooked > 0 ? m.attended / m.callsBooked * 100 : null,
+      lossRate: m.callsBooked > 0 ? m.noShows / m.callsBooked * 100 : null,
+      initiative: "02 · 03",
+    },
+    {
+      stage: "Attended Call",
+      note: "Booked minus no-shows · proxy",
+      entered: m.attended,
+      advanced: m.billingEntered,
+      lost: m.dropOffs,
+      conv: m.attended > 0 ? m.billingEntered / m.attended * 100 : null,
+      lossRate: m.dropRate,
+      initiative: null,
+    },
+    {
+      stage: "Billing Details",
+      note: "First post-call stage",
+      entered: m.billingEntered,
+      advanced: m.billing_progressed,
+      lost: m.billing_cl,
+      conv: m.billingEntered > 0 ? m.billing_progressed / m.billingEntered * 100 : null,
+      lossRate: m.billingEntered > 0 ? m.billing_cl / m.billingEntered * 100 : null,
+      initiative: "04",
+    },
+    {
+      stage: "Recruiting",
+      note: "Rep opens job order · directional",
+      entered: m.recruiting,
+      advanced: m.resumesSent,
+      lost: Math.round(m.recruiting * 0.22),
+      conv: 78,
+      lossRate: 22,
+      initiative: null,
+      directional: true,
+    },
+    {
+      stage: "Resumes Sent",
+      note: "Candidates shared with client · directional",
+      entered: m.resumesSent,
+      advanced: m.interviewScheduled,
+      lost: Math.round(m.resumesSent * 0.20),
+      conv: 80,
+      lossRate: 20,
+      initiative: null,
+      directional: true,
+    },
+    {
+      stage: "Interview Scheduled",
+      note: "Client selects candidates · directional",
+      entered: m.interviewScheduled,
+      advanced: m.agreementSent,
+      lost: Math.round(m.interviewScheduled * 0.12),
+      conv: 88,
+      lossRate: 12,
+      initiative: null,
+      directional: true,
+    },
+    {
+      stage: "Agreement Sent",
+      note: "Client picks candidate · directional",
+      entered: m.agreementSent,
+      advanced: Math.round(m.agreementSent * 0.96),
+      lost: Math.round(m.agreementSent * 0.04),
+      conv: 96,
+      lossRate: 4,
+      initiative: null,
+      directional: true,
+    },
+    {
+      stage: "Active Client",
+      note: "Deposit paid · placement confirmed",
+      entered: m.activeClient,
+      advanced: null,
+      lost: null,
+      conv: null,
+      lossRate: null,
+      initiative: null,
+    },
+  ];
+
+  const trendMonths = months.filter(mk => data.computed.byMonth[mk].callsBooked > 0);
+
   return (
     <>
-      <div style={{ background:C.greenBg, border:`0.5px solid ${C.greenBd}`, borderRadius:6,
-        padding:"9px 13px", fontSize:12, lineHeight:1.5, color:C.greenText,
-        display:"flex", gap:8, marginBottom:12 }}>
-        <span>💡</span>
-        <div>Analytical context for RevOps and sales management. All numbers confirmed from HubSpot.</div>
+      <div style={{ background: C.bg2, border: `0.5px solid ${C.border}`, borderRadius: 6,
+        padding: "10px 14px", marginBottom: 14, fontSize: 12, color: C.text2 }}>
+        Diagnostic view — where opportunities are being lost. Use this to identify future initiative candidates, not to measure existing initiative success.
       </div>
 
-      {/* Post-call drop rate */}
-      <Card title="Post-call drop rate — trend tracking"
-        sub={`Deals that attended a call, didn't enter billing, and aren't in Parking Lot. Parking Lot stage (ID: 1063655701) confirmed and separated for all months. Rate controls for volume changes.`}>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-          <thead>
-            <tr>
-              {["Month","Booked","No-shows","Attended","Billing","Parked","Drop-offs","Drop rate","Trend"].map(h => (
-                <th key={h} style={{ fontSize:10, textTransform:"uppercase", letterSpacing:"0.05em",
-                  color:C.text2, fontWeight:500, padding:"6px 10px",
-                  textAlign: h==="Month" ? "left" : "right", borderBottom:`0.5px solid ${C.border}` }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {trendMonths.map((mk, i) => {
-              const r = data.computed.byMonth[mk];
-              const prev = i > 0 ? data.computed.byMonth[trendMonths[i-1]] : undefined;
-              const isSelected = mk === selMonth;
-              return (
-                <tr key={mk} style={{ borderBottom:`0.5px solid ${C.border}`,
-                  background: isSelected ? C.blueBg : undefined }}>
-                  <td style={{ padding:"7px 10px", color:C.text2, fontWeight: isSelected ? 600 : 400 }}>{fmtMonth(mk)}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{n(r.callsBooked)}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{n(r.noShows)} ({Math.round(r.noShows/r.callsBooked*100)}%)</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{n(r.attended)}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{n(r.billingEntered)}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{n(r.parkingLot)}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{n(r.dropOffs)}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right", fontWeight:500,
-                    color: dropColor(r.dropRate) }}>{pct(r.dropRate)}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>
-                    {trendPill(r.dropRate, prev?.dropRate)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div style={{ fontSize:11, color:C.text2, marginTop:8, paddingTop:8,
-          borderTop:`0.5px solid ${C.border}` }}>
-          {trendMonths.length > 0 && (() => {
-            const avg = trendMonths.reduce((s,mk) => s + data.computed.byMonth[mk].dropRate, 0) / trendMonths.length;
-            return `${trendMonths.length}-month average: ${avg.toFixed(1)}%. No initiative currently targets this gap — monitoring only.`;
-          })()}
+      {/* Stage funnel table */}
+      <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10,
+        overflow: "hidden", marginBottom: 12 }}>
+        <div style={{ padding: "12px 16px", borderBottom: `0.5px solid ${C.border}` }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>Stage-by-Stage Opportunity Map — {fmtMonth(selMonth)}</div>
         </div>
-      </Card>
-
-      {/* Cohort analysis */}
-      <Card title="Cohort analysis — lead entry month vs lifetime outcomes"
-        sub="">
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
-            <tr>
-              {["Month","Leads","Book rate","No-show rate","Pipeline rate","Active rate","Status"].map(h => (
-                <th key={h} style={{ fontSize:10, textTransform:"uppercase", letterSpacing:"0.05em",
-                  color:C.text2, fontWeight:500, padding:"6px 10px",
-                  textAlign: h==="Month" ? "left" : "right", borderBottom:`0.5px solid ${C.border}` }}>{h}</th>
+            <tr style={{ background: C.bg2 }}>
+              {["Stage","Opps Entered","Opps Advanced","Opps Lost","Conversion Rate","Loss Rate","Initiative"].map(h => (
+                <th key={h} style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em",
+                  color: C.text2, fontWeight: 500, padding: "8px 12px",
+                  textAlign: h === "Stage" ? "left" : "right",
+                  borderBottom: `0.5px solid ${C.border}` }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {months.map(mk => {
-              const r = data.computed.byMonth[mk];
-              const isSelected = mk === selMonth;
-              function maturityPill(s: MonthlyMetrics["cohort_maturity"]) {
-                const map: Record<string, { color: PillColor; label: string }> = {
-                  mature: { color:"green", label:"Mature ✓" },
-                  partial: { color:"amber", label:"Partial" },
-                  immature: { color:"amber", label:"Immature" },
-                  too_early: { color:"grey", label:"In progress" },
-                };
-                const p = map[s];
-                return <Pill color={p.color}>{p.label}</Pill>;
-              }
-              return (
-                <tr key={mk} style={{ borderBottom:`0.5px solid ${C.border}`,
-                  background: isSelected ? C.blueBg : undefined }}>
-                  <td style={{ padding:"7px 10px", color:C.text2, fontWeight: isSelected ? 600 : 400 }}>{fmtMonth(mk)}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right", color:C.blue, fontWeight:500 }}>
-                    {r.cohort_leads > 0 ? n(r.cohort_leads) : "—"}
-                  </td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{r.cohort_bookRate > 0 ? pct(r.cohort_bookRate) : "—"}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{r.cohort_noShowRate > 0 ? pct(r.cohort_noShowRate) : "—"}</td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>
-                    {r.cohort_pipelineRate > 0 ? <>{pct(r.cohort_pipelineRate)} {r.cohort_maturity !== "mature" ? "⏱" : ""}</> : "—"}
-                  </td>
-                  <td style={{ padding:"7px 10px", textAlign:"right",
-                    color: r.cohort_maturity === "mature" ? C.greenText : C.amber }}>
-                    {r.cohort_activeRate > 0 ? <>{pct(r.cohort_activeRate)} {r.cohort_maturity !== "mature" ? "⏱" : ""}</> : "—"}
-                  </td>
-                  <td style={{ padding:"7px 10px", textAlign:"right" }}>{maturityPill(r.cohort_maturity)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div style={{ fontSize:11, color:C.text2, marginTop:8, paddingTop:8,
-          borderTop:`0.5px solid ${C.border}` }}>
-          ⏱ = rates stabilise after 42+ days. Jan shown for reference only.
-        </div>
-      </Card>
-
-      {/* Stage-level leak rates */}
-      <Card title={`Stage-level leak rates — ${fmtMonth(selMonth)}`}
-        sub="Sub-stages (Recruiting onwards) are directional — reps don't always update in sequence.">
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-          <thead>
-            <tr>
-              {["Stage","What happens here","Entered","Closed lost","Leak rate"].map(h => (
-                <th key={h} style={{ fontSize:10, textTransform:"uppercase", letterSpacing:"0.05em",
-                  color:C.text2, fontWeight:500, padding:"6px 10px",
-                  textAlign: h==="Stage" ? "left" : "right", borderBottom:`0.5px solid ${C.border}` }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {[
-              { stage:"Enrolled in seq.", what:"Didn't self-book · Init 01 cohort", ent: m.cohort_leads > 0 ? Math.round(m.cohort_leads * 0.08) : 168, cl: m.missedZoom_cl > 0 ? Math.round(m.closedLost * 0.065) : 142, rate:85 },
-              { stage:"Missed zoom call", what:"No-show · Init 02·03 cohort", ent:m.noShows, cl:m.missedZoom_cl, rate: Math.round(m.missedZoom_cl/Math.max(m.noShows,1)*100) },
-              { stage:"Billing details", what:"Rep confirms billing · Init 04", ent:m.billingEntered, cl:m.billing_cl, rate: Math.round(m.billing_cl/Math.max(m.billingEntered,1)*100) },
-              { stage:"↳ Recruiting (dir.)", what:"Rep opens job, sources candidates", ent:m.recruiting, cl: null, rate:22, indent:true },
-              { stage:"↳ Resumes sent (dir.)", what:"Candidate profiles sent to client", ent:m.resumesSent, cl: null, rate:20, indent:true },
-              { stage:"↳ Interview (dir.)", what:"Client selects candidates to meet", ent:m.interviewScheduled, cl: null, rate:12, indent:true },
-              { stage:"↳ Agreement (dir.)", what:"Client picks candidate · agreement sent", ent:m.agreementSent, cl: null, rate:4, indent:true },
-              { stage:"Active client", what:"Deposit paid · placement confirmed", ent:m.activeClient, cl: null, rate: null },
-            ].map((row, i) => (
-              <tr key={i} style={{ borderBottom:`0.5px solid ${C.border}` }}>
-                <td style={{ padding:"7px 10px", color: (row as {indent?: boolean}).indent ? C.text2 : C.text,
-                  paddingLeft: (row as {indent?: boolean}).indent ? 22 : 10 }}>{row.stage}</td>
-                <td style={{ padding:"7px 10px", textAlign:"right", color:C.text2 }}>{row.what}</td>
-                <td style={{ padding:"7px 10px", textAlign:"right" }}>{n(row.ent)}</td>
-                <td style={{ padding:"7px 10px", textAlign:"right" }}>{row.cl !== null ? n(row.cl) : "—"}</td>
-                <td style={{ padding:"7px 10px", textAlign:"right", fontWeight:500,
-                  color: row.rate === null ? C.text2 : row.rate > 50 ? C.red : row.rate > 20 ? C.amber : "#3B6D11" }}>
-                  {row.rate !== null ? `${row.rate}%` : "—"}
+            {funnelStages.map((row, i) => (
+              <tr key={i} style={{ borderBottom: `0.5px solid ${C.border}` }}>
+                <td style={{ padding: "10px 12px" }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: row.directional ? C.text2 : C.text }}>
+                    {row.directional ? `↳ ${row.stage}` : row.stage}
+                  </div>
+                  <div style={{ fontSize: 10, color: C.text2, marginTop: 1 }}>{row.note}</div>
+                </td>
+                <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 500 }}>{n(row.entered)}</td>
+                <td style={{ padding: "10px 12px", textAlign: "right", color: C.text2 }}>
+                  {row.advanced !== null ? n(row.advanced) : "—"}
+                </td>
+                <td style={{ padding: "10px 12px", textAlign: "right", color: C.text2 }}>
+                  {row.lost !== null ? n(row.lost) : "—"}
+                </td>
+                <td style={{ padding: "10px 12px", textAlign: "right", color: C.blue, fontWeight: 500 }}>
+                  {row.conv !== null ? pct(row.conv) : "—"}
+                </td>
+                <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600,
+                  color: lossColor(row.lossRate) }}>
+                  {row.lossRate !== null ? pct(row.lossRate) : "—"}
+                </td>
+                <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                  {row.initiative
+                    ? <Pill color="amber">{row.initiative}</Pill>
+                    : <span style={{ color: C.text2, fontSize: 11 }}>—</span>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-      </Card>
+        <div style={{ padding: "8px 12px", borderTop: `0.5px solid ${C.border}`,
+          fontSize: 11, color: C.text2 }}>
+          ↳ Sub-stage counts (Recruiting onwards) are directional — reps don&apos;t always update stages in sequence.
+          Loss rates use confirmed handoff benchmarks.
+        </div>
+      </div>
+
+      {/* Stage breakdowns */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "16px 20px" }}>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>No-Show Breakdown</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <MiniStat label="Closed Lost"  value={n(m.missedZoom_cl)}
+              sub={`${Math.round(m.missedZoom_cl / Math.max(m.noShows, 1) * 100)}%`} color={C.red} />
+            <MiniStat label="Rebooked"     value={n(m.missedZoom_rebooked)}
+              sub={`${Math.round(m.missedZoom_rebooked / Math.max(m.noShows, 1) * 100)}%`} color={C.green} />
+            <MiniStat label="Still Open"   value={n(m.missedZoom_open)}
+              sub={`${Math.round(m.missedZoom_open / Math.max(m.noShows, 1) * 100)}%`} color={C.amber} />
+          </div>
+          <div style={{ marginTop: 8, fontSize: 11, color: C.text2 }}>Initiatives 02 · 03 target this stage.</div>
+        </div>
+        <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10, padding: "16px 20px" }}>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>Billing Breakdown</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <MiniStat label="Closed Lost"  value={n(m.billing_cl)}
+              sub={`${Math.round(m.billing_cl / Math.max(m.billingEntered, 1) * 100)}%`} color={C.red} />
+            <MiniStat label="Progressed"   value={n(m.billing_progressed)}
+              sub={`${Math.round(m.billing_progressed / Math.max(m.billingEntered, 1) * 100)}%`} color={C.green} />
+            <MiniStat label="Still Active" value={n(m.billing_active)}
+              sub={`${Math.round(m.billing_active / Math.max(m.billingEntered, 1) * 100)}%`} color={C.blue} />
+          </div>
+          <div style={{ marginTop: 8, fontSize: 11, color: C.text2 }}>Initiative 04 targets this stage.</div>
+        </div>
+      </div>
+
+      {/* Post-call drop rate trend */}
+      <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10,
+        padding: "16px 20px" }}>
+        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Post-Call Drop Rate Trend</div>
+        <div style={{ fontSize: 12, color: C.text2, marginBottom: 10 }}>
+          Attended calls that didn&apos;t enter billing and aren&apos;t in Parking Lot.
+          No initiative currently targets this — monitoring only.
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              {["Month","Booked","No-shows","Attended","Billing","Parked","Drop-offs","Drop Rate"].map(h => (
+                <th key={h} style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em",
+                  color: C.text2, fontWeight: 500, padding: "6px 10px",
+                  textAlign: h === "Month" ? "left" : "right",
+                  borderBottom: `0.5px solid ${C.border}` }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {trendMonths.map(mk => {
+              const r = data.computed.byMonth[mk];
+              const rate = r.dropRate;
+              return (
+                <tr key={mk} style={{ borderBottom: `0.5px solid ${C.border}`,
+                  background: mk === selMonth ? C.blueBg : undefined }}>
+                  <td style={{ padding: "7px 10px", color: C.text2,
+                    fontWeight: mk === selMonth ? 600 : 400 }}>{fmtMonth(mk)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{n(r.callsBooked)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>
+                    {n(r.noShows)} ({Math.round(r.noShows / r.callsBooked * 100)}%)
+                  </td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{n(r.attended)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{n(r.billingEntered)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{n(r.parkingLot)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right" }}>{n(r.dropOffs)}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 600,
+                    color: rate > 20 ? C.red : rate > 12 ? C.amber : "#3B6D11" }}>
+                    {pct(rate)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
 
-function Card({ title, sub, children }: {
-  title: string; sub: string; children: React.ReactNode;
+function MiniStat({ label, value, sub, color }: {
+  label: string; value: string; sub: string; color: string;
 }) {
   return (
-    <div style={{ background:"#fff", border:`0.5px solid ${C.border}`, borderRadius:10,
-      padding:"16px 20px", marginBottom:12 }}>
-      <div style={{ fontSize:13, fontWeight:500, marginBottom: sub ? 6 : 10 }}>{title}</div>
-      {sub && <div style={{ fontSize:12, color:C.text2, marginBottom:10 }}>{sub}</div>}
-      <div style={{ overflowX:"auto" }}>{children}</div>
+    <div style={{ background: C.bg2, borderRadius: 6, padding: "8px 10px" }}>
+      <div style={{ fontSize: 10, color: C.text2, marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color }}>{value}</div>
+      <div style={{ fontSize: 10, color }}>{sub}</div>
     </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// INITIATIVE TRACKER TAB
+// TAB 3 — METHODOLOGY
 // ══════════════════════════════════════════════════════════════════════════════
 
-function InitiativeTab({ m, inits, data, selMonth }: {
-  m: MonthlyMetrics; inits: ApiData["initiatives"] | undefined;
-  data: ApiData; selMonth: string;
-}) {
-  const init1 = inits?.["01"];
-  const months = Object.keys(data.computed.byMonth).sort();
-
-  // Compute 4-month drop rate average
-  const avg4 = months.slice(-4).reduce((s,mk) => s + data.computed.byMonth[mk].dropRate, 0) / Math.min(months.length, 4);
-
+function MethodologyTab({ data }: { data: ApiData }) {
   return (
     <>
-      <div style={{ background:C.bg2, border:`0.5px solid ${C.border}`,
-        borderRadius:10, padding:"14px 16px", marginBottom:14,
-        borderLeft:`3px solid ${C.blue}` }}>
-        <div style={{ fontSize:15, fontWeight:500, marginBottom:4 }}>
-          One initiative has a confirmed signal.
-        </div>
-        <div style={{ fontSize:13, color:C.text2 }}>
-          Four are in the measurement window — next read dates:{" "}
-          <b style={{ color:C.text }}>Jun 15</b> (Init 03),{" "}
-          <b style={{ color:C.text }}>Jun 23</b> (Init 04),{" "}
-          <b style={{ color:C.text }}>Jul 1</b> (Init 01),{" "}
-          <b style={{ color:C.text }}>Jul 10</b> (Init 02).
-        </div>
+      <div style={{ background: C.bg2, border: `0.5px solid ${C.border}`, borderRadius: 6,
+        padding: "10px 14px", marginBottom: 14, fontSize: 12, color: C.text2 }}>
+        Reference documentation — measurement approach, HubSpot logic, cohort rules, and data confidence.
       </div>
 
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
-        marginBottom:14, flexWrap:"wrap", gap:8 }}>
-        <div style={{ fontSize:11, color:C.text2, textTransform:"uppercase", letterSpacing:"0.07em" }}>
-          Before / after update · {new Date(data.lastRefreshed).toLocaleDateString("en-AU",{day:"numeric",month:"long",year:"numeric"})}
-        </div>
-        <button onClick={() => window.print()}
-          style={{ padding:"5px 12px", borderRadius:6, border:"none",
-            background:C.blue, color:"#fff", fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
-          🖨 Print
-        </button>
-      </div>
+      <MethodSection title="Before / After Methodology">
+        <p style={{ margin: 0, fontSize: 12, color: C.text2, lineHeight: 1.8 }}>
+          Each initiative has a defined <b style={{ color: C.text }}>old motion period</b>, a <b style={{ color: C.text }}>switch date</b>, and a <b style={{ color: C.text }}>new motion period</b>.
+          The dashboard presents a before/after comparison, not a controlled A/B test — a randomised trial is not feasible on a live sales team without contaminating both cohorts.
+          Results are treated as <b style={{ color: C.text }}>directional evidence</b>: if the metric moves in the right direction after the switch date, on a comparable cohort size, that is a meaningful signal.
+          Limitations: lead quality, market conditions, and rep tenure may differ across old and new cohorts.
+        </p>
+      </MethodSection>
 
-      {/* Where we stand */}
-      <div style={{ marginBottom:24 }}>
-        <div style={{ fontSize:16, fontWeight:500, color:C.text, marginBottom:14,
-          paddingBottom:8, borderBottom:`0.5px solid ${C.border}` }}>
-          Where we stand — {fmtMonth(selMonth)}
-        </div>
-        <div style={{ fontSize:14, lineHeight:1.8, color:C.text, marginBottom:14 }}>
-          This month we generated <b>{n(m.cohort_leads || m.callsBooked)} leads</b>, booked{" "}
-          <b>{n(m.callsBooked)} discovery calls</b>, and placed{" "}
-          <b>{n(m.activeClient)} new clients</b>. Closed won entered at{" "}
-          <b>{n(m.closedWon)}</b>. Closed lost came in at{" "}
-          <b>{n(m.closedLost)}</b> — proportional to year-on-year lead volume growth.
-        </div>
-        <div style={{ fontSize:14, lineHeight:1.8, color:C.text }}>
-          The overall lead-to-placement rate is{" "}
-          <b>{m.cohort_leads > 0 ? pct(m.activeClient / m.cohort_leads * 100) : "~10%"}</b>
-          {" "}— {Math.round(m.activeClient / Math.max(m.cohort_leads || m.callsBooked, 1) * 100)} in every 100 leads become an active client.
-        </div>
-      </div>
+      <MethodSection title="Initiative Periods and Read Windows">
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              {["Initiative","Old Period","Switch Date","New Period","Primary Metric","Read Window"].map(h => (
+                <th key={h} style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em",
+                  color: C.text2, fontWeight: 500, padding: "6px 10px",
+                  textAlign: "left", borderBottom: `0.5px solid ${C.border}` }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              { k:"01", n:"Form Fill",     old:"Jan 26 – May 16", sw:"May 19", newp:"May 19+",  m:"Meeting rate",      w:"Immediate (meeting). 42+ days (billing, clients)." },
+              { k:"02", n:"Missed Zoom",   old:"Before May 27",   sw:"May 28", newp:"May 28+",  m:"Rebook rate",       w:"42+ days. First read Jun 10. Full read Jul 10." },
+              { k:"03", n:"TZ Rebook",     old:"Feb 22 – Apr 7",  sw:"Apr 8",  newp:"Apr 8+",   m:"Rebook rate",       w:"42+ days. Read Jun 15. Pull baseline first." },
+              { k:"04", n:"48hr Tasks",    old:"Before May 11",   sw:"May 12", newp:"May 12+",  m:"Pipeline velocity", w:"Week-over-week. Read Jun 23." },
+              { k:"05", n:"Pre-Meeting",   old:"N/A",             sw:"TBD",    newp:"TBD",      m:"Show rate",         w:"After launch. Baseline: ~59%." },
+            ].map(row => (
+              <tr key={row.k} style={{ borderBottom: `0.5px solid ${C.border}` }}>
+                <td style={{ padding: "8px 10px", fontWeight: 500 }}>0{row.k} · {row.n}</td>
+                <td style={{ padding: "8px 10px", color: C.text2 }}>{row.old}</td>
+                <td style={{ padding: "8px 10px" }}>{row.sw}</td>
+                <td style={{ padding: "8px 10px", color: C.text2 }}>{row.newp}</td>
+                <td style={{ padding: "8px 10px" }}>{row.m}</td>
+                <td style={{ padding: "8px 10px", color: C.text2 }}>{row.w}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </MethodSection>
 
-      {/* About this analysis */}
-      <div style={{ marginBottom:24 }}>
-        <div style={{ fontSize:16, fontWeight:500, color:C.text, marginBottom:14,
-          paddingBottom:8, borderBottom:`0.5px solid ${C.border}` }}>
-          About this analysis
+      <MethodSection title="Cohort Maturity Rules">
+        <div style={{ fontSize: 12, color: C.text2, lineHeight: 1.8, marginBottom: 8 }}>
+          Downstream metrics (billing rate, active client rate) require <b style={{ color: C.text }}>42+ days</b> to stabilise. Meeting rate is readable immediately.
         </div>
-        <div style={{ background:C.bg2, borderRadius:6, padding:"12px 14px",
-          fontSize:12, color:C.text2, lineHeight:1.6, marginBottom:20 }}>
-          We&apos;ve built a <b style={{ color:C.text }}>before/after comparison</b> with a defined cutoff date for each initiative,
-          matched on lead volume and market conditions. We treat this as{" "}
-          <b style={{ color:C.text }}>directional evidence</b>: if the metric moves in the right direction after the
-          switch date, on a comparable cohort, that&apos;s a meaningful signal. It&apos;s not a controlled
-          experiment — but it&apos;s the most rigorous measurement available to us in a live sales
-          environment. Each initiative has a defined old motion period, a switch date, and a new motion period.
-          We&apos;re tracking the same funnel metrics across both windows.
-        </div>
-      </div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <tbody>
+            {[
+              { status:"Mature ✓",    days:"42+ days",   note:"All rates readable and stable" },
+              { status:"Partial ⏱",  days:"28–41 days", note:"Pipeline rate visible; active client rate immature" },
+              { status:"Immature ⏱", days:"14–27 days", note:"Meeting rate visible; downstream too early" },
+              { status:"In Progress", days:"< 14 days",  note:"No reliable metrics yet" },
+            ].map(row => (
+              <tr key={row.status} style={{ borderBottom: `0.5px solid ${C.border}` }}>
+                <td style={{ padding: "7px 10px", fontWeight: 500 }}>{row.status}</td>
+                <td style={{ padding: "7px 10px", color: C.text2 }}>{row.days}</td>
+                <td style={{ padding: "7px 10px", color: C.text2 }}>{row.note}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </MethodSection>
 
-      {/* Before/after table */}
-      <div style={{ marginBottom:24 }}>
-        <div style={{ fontSize:16, fontWeight:500, color:C.text, marginBottom:14,
-          paddingBottom:8, borderBottom:`0.5px solid ${C.border}` }}>
-          Initiative before/after — current verdicts
+      <MethodSection title="HubSpot Stage IDs and Query Logic">
+        <div style={{ fontSize: 12, color: C.text2, marginBottom: 10, lineHeight: 1.7 }}>
+          All metrics use <code style={{ background: C.bg2, padding: "1px 4px", borderRadius: 3 }}>hs_v2_date_entered_[stageId]</code> properties.
+          Pipeline filter: <code style={{ background: C.bg2, padding: "1px 4px", borderRadius: 3 }}>pipeline = &apos;default&apos;</code> for all metrics except Active Client.
+          Active Client queries run across <b style={{ color: C.text }}>all pipelines</b> — deals move to CS pipeline on placement.
+          Valid lead filter: <code style={{ background: C.bg2, padding: "1px 4px", borderRadius: 3 }}>hs_v2_date_entered_appointmentscheduled HAS_PROPERTY</code>.
+          Date filters use full ISO timestamps (e.g. 2026-05-01T00:00:00.000Z) to avoid midnight UTC cutoff issues.
         </div>
-        <div style={{ border:`0.5px solid ${C.border}`, borderRadius:10, overflow:"hidden" }}>
-          {/* Header */}
-          <div style={{ display:"flex", alignItems:"flex-start", gap:14,
-            padding:"10px 16px", background:C.bg2 }}>
-            <div style={{ width:165, flexShrink:0, fontSize:11, textTransform:"uppercase",
-              letterSpacing:"0.05em", color:C.text2 }}>Initiative</div>
-            <div style={{ flex:1, fontSize:11, textTransform:"uppercase",
-              letterSpacing:"0.05em", color:C.text2 }}>What changed · what the data shows</div>
-            <div style={{ width:155, flexShrink:0, textAlign:"right", fontSize:11,
-              textTransform:"uppercase", letterSpacing:"0.05em", color:C.text2 }}>Verdict · next action</div>
-          </div>
-          {/* Rows */}
-          {INIT_TRACKER_ROWS.map((row, i) => {
-            const iv = inits?.[String(i+1).padStart(2,"0") as keyof typeof inits];
-            return (
-              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:14,
-                padding:"14px 16px", borderTop:`0.5px solid ${C.border}` }}>
-                <div style={{ width:165, flexShrink:0 }}>
-                  <div style={{ fontSize:12, fontWeight:500, color:C.text }}>{row.title}</div>
-                  <div style={{ fontSize:11, fontWeight:400, color:C.text2, marginTop:2 }}>{row.switchDate}</div>
-                </div>
-                <div style={{ flex:1, fontSize:13, color:C.text2, lineHeight:1.6 }}>
-                  {row.body(iv)}
-                </div>
-                <div style={{ width:155, flexShrink:0, textAlign:"right" }}>
-                  <Pill color={row.verdictColor as PillColor}>{row.verdict}</Pill>
-                  <div style={{ marginTop:6, fontSize:11, padding:"5px 8px", background:"#fff",
-                    borderRadius:6, border:`0.5px solid ${C.border}`, color:C.text2, textAlign:"left" }}>
-                    <b style={{ color:C.text }}>{row.action}</b>
-                    {" "}— {row.actionDetail}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              {["Stage","Stage ID","Property"].map(h => (
+                <th key={h} style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em",
+                  color: C.text2, fontWeight: 500, padding: "6px 10px",
+                  textAlign: "left", borderBottom: `0.5px solid ${C.border}` }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              ["Lead",                   "appointmentscheduled", "hs_v2_date_entered_appointmentscheduled"],
+              ["Enrolled in Sequence",   "28807353",             "hs_v2_date_entered_28807353"],
+              ["Zoom Call Booked",       "13542462",             "hs_v2_date_entered_13542462"],
+              ["Parking Lot",            "1063655701",           "hs_v2_date_entered_1063655701"],
+              ["Missed Zoom Call",       "28817239",             "hs_v2_date_entered_28817239"],
+              ["Getting Billing Details","22600467",             "hs_v2_date_entered_22600467"],
+              ["Recruiting",             "5423787",              "hs_v2_date_entered_5423787"],
+              ["Resumes Sent",           "5568500",              "hs_v2_date_entered_5568500"],
+              ["Interview Scheduled",    "12635527",             "hs_v2_date_entered_12635527"],
+              ["Agreement Sent",         "13812915",             "hs_v2_date_entered_13812915"],
+              ["Closed Lost",            "28817241",             "hs_v2_date_entered_28817241"],
+              ["Active Client",          "12751919",             "hs_v2_date_entered_12751919"],
+              ["DNC",                    "16160504",             "hs_v2_date_entered_16160504"],
+            ].map(([stage, id, prop]) => (
+              <tr key={id} style={{ borderBottom: `0.5px solid ${C.border}` }}>
+                <td style={{ padding: "7px 10px" }}>{stage}</td>
+                <td style={{ padding: "7px 10px", fontFamily: "monospace", color: C.blue }}>{id}</td>
+                <td style={{ padding: "7px 10px", fontFamily: "monospace", fontSize: 11, color: C.text2 }}>{prop}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ marginTop: 10, fontSize: 11, color: C.text2, lineHeight: 1.7 }}>
+          <b style={{ color: C.text }}>Closed Won</b> = first entry to any of: Recruiting, Resumes Sent, Interview Scheduled, Agreement Sent.
+          Query uses 4 filterGroups (OR logic), pipeline = default, valid lead filter.
+          HubSpot deduplicates across filterGroups. 4 groups × 4 filters = 16 total filters (under HubSpot&apos;s 18-filter limit).<br/>
+          <b style={{ color: C.text }}>Rebook rate</b> (Init 02): zoom booked date must be strictly <em>after</em> missed zoom date. Original booking is not counted.<br/>
+          <b style={{ color: C.text }}>Parking Lot</b> (stage ID 1063655701): separated in all monthly metrics. Entry count in month — not current stage count.
         </div>
-      </div>
+      </MethodSection>
 
-      {/* What to watch */}
-      <div style={{ marginBottom:24 }}>
-        <div style={{ fontSize:16, fontWeight:500, color:C.text, marginBottom:14,
-          paddingBottom:8, borderBottom:`0.5px solid ${C.border}` }}>
-          What to watch
-        </div>
-        <WatchRow title="Post-call drop rate"
-          value={pct(m.dropRate)}
-          valueColor={m.dropRate > 20 ? C.red : m.dropRate > 12 ? C.amber : "#3B6D11"}
-          badge={<Pill color="green">▼ May improved from prior month</Pill>}
-          body={`Rate of attended calls that didn't enter billing and aren't in Parking Lot. ${avg4.toFixed(1)}% average. Tracked as a rate (not absolute count). No owner assigned — monitoring only.`} />
-        <WatchRow title="Next full read date"
-          value="Jul 1"
-          valueColor={C.blue}
-          badge={<Pill color="blue">29 days</Pill>}
-          body="Initiative 01's post-billing and active client rates become readable Jul 1. The +10.6pp meeting rate is the leading indicator — Jul 1 confirms or challenges the ~2.8 additional clients projection. Initiatives 02, 03, 04 will have partial reads by then. Full picture by Aug 1." />
-      </div>
+      <MethodSection title="Data Exclusions">
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <tbody>
+            {[
+              { e:"Jeremy Levitt / Baden Bower", how:"Contact ID 9313151 excluded via contact association filter", r:"Partner — automated bulk enrollment skews sequence metrics" },
+              { e:"Quick Jobs",                  how:"job.quick_job = true excluded from all job counts",           r:"Not standard placements" },
+              { e:"Draft Jobs",                  how:"job.status = Draft excluded",                                  r:"Not finalized" },
+              { e:"Outbound SDRs (Carlos, Paul, Christiaan, Kyle)", how:"Excluded from revenue attribution",        r:"Booking only — no closing responsibility" },
+            ].map(row => (
+              <tr key={row.e} style={{ borderBottom: `0.5px solid ${C.border}` }}>
+                <td style={{ padding: "8px 10px", fontWeight: 500, whiteSpace: "nowrap" }}>{row.e}</td>
+                <td style={{ padding: "8px 10px", color: C.text2 }}>{row.how}</td>
+                <td style={{ padding: "8px 10px", color: C.text2 }}>{row.r}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </MethodSection>
 
-      {/* Init 01 economics */}
-      {init1 && init1.new.enrolled > 0 && (
-        <div style={{ marginBottom:24 }}>
-          <div style={{ fontSize:16, fontWeight:500, color:C.text, marginBottom:14,
-            paddingBottom:8, borderBottom:`0.5px solid ${C.border}` }}>
-            Recovery economics — Initiative 01
-          </div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginBottom:10 }}>
-            <div style={{ background:C.greenBg, border:`0.5px solid ${C.greenBd}`, borderRadius:6, padding:"12px 14px" }}>
-              <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em", color:C.text2, marginBottom:4 }}>Net incremental margin</div>
-              <div style={{ fontSize:20, fontWeight:500, color:C.green }}>+$1,405/mo</div>
-              <div style={{ fontSize:11, color:C.greenText }}>sequence cost basis · confirmed meeting signal</div>
-            </div>
-            <div style={{ background:C.blueBg, border:`0.5px solid ${C.blueBd}`, borderRadius:6, padding:"12px 14px" }}>
-              <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em", color:C.text2, marginBottom:4 }}>Projected margin LTV</div>
-              <div style={{ fontSize:20, fontWeight:500, color:C.blue }}>+$8,310/mo</div>
-              <div style={{ fontSize:11, color:C.blueText }}>~2.8 additional clients · if downstream rates hold</div>
-            </div>
-            <div style={{ background:C.bg2, borderRadius:6, padding:"12px 14px" }}>
-              <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em", color:C.text2, marginBottom:4 }}>Payback</div>
-              <div style={{ fontSize:20, fontWeight:500, color:C.green }}>✓ Positive</div>
-              <div style={{ fontSize:11, color:C.text2 }}>New motion covers its cost premium</div>
-            </div>
-          </div>
-          <div style={{ fontSize:11, color:C.text2, lineHeight:1.6 }}>
-            $1,405/mo = sequence cost model (old $0 vs new $60/meeting). $8,310/mo = downstream projection at old conversion rates. Lead acquisition cost ($237/lead) already invested. Confirmed read Jul 1.
-          </div>
+      <MethodSection title="Data Confidence Notes">
+        <div style={{ fontSize: 12, color: C.text2, lineHeight: 1.9 }}>
+          <b style={{ color: C.text }}>Attended Call</b> is a proxy: Zoom Booked minus Missed Zoom entries in the month. Not a direct HubSpot property.<br/>
+          <b style={{ color: C.text }}>Sub-stage counts</b> (Recruiting onwards) are directional — reps don&apos;t always update stages in sequence.<br/>
+          <b style={{ color: C.text }}>Active Client</b> queries run across all pipelines — no pipeline filter applied.<br/>
+          <b style={{ color: C.text }}>Benchmark variance</b>: allow ±5% for real-time data changes since confirmed numbers (June 3, 2026).<br/>
+          Data refresh is manual. Click ↻ Refresh in the header to pull the latest from HubSpot.
         </div>
-      )}
+      </MethodSection>
 
-      {/* Footnote */}
-      <div style={{ paddingTop:16, borderTop:`0.5px solid ${C.border}`, fontSize:11, color:C.text2, lineHeight:1.6 }}>
-        Data source: HubSpot CRM · Sales Pipeline (pipeline = &quot;default&quot;) · All counts confirmed from HubSpot using hs_v2_date_entered_* properties. Active Client queries run across all pipelines (stage 12751919). Attended call = zoom booked minus missed zoom entries (proxy). Parking Lot stage ID: 1063655701 — confirmed and separated in all months. Sub-stage counts (Recruiting onwards) are directional. Excludes Jeremy Levitt / Baden Bower (partner contact ID: 9313151). Timezone: SGT (UTC+8). Last data pull: {new Date(data.lastRefreshed).toLocaleDateString("en-AU",{day:"numeric",month:"long",year:"numeric"})}.
+      <div style={{ paddingTop: 12, borderTop: `0.5px solid ${C.border}`,
+        fontSize: 11, color: C.text2, lineHeight: 1.7 }}>
+        Data source: HubSpot CRM · Sales Pipeline (pipeline = &quot;default&quot;) · Timezone: SGT (UTC+8).<br/>
+        Last data pull: <b>{new Date(data.lastRefreshed).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" })}</b>.
+        GitHub: github.com/vivianaveral/pipeline-optimization · Deployed on Railway.
       </div>
     </>
   );
 }
 
-function WatchRow({ title, value, valueColor, badge, body }: {
-  title: string; value: string; valueColor: string;
-  badge: React.ReactNode; body: string;
-}) {
+function MethodSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ padding:"12px 14px", background:C.bg2, borderRadius:6, marginBottom:8 }}>
-      <div style={{ fontSize:11, color:C.text2, marginBottom:2,
-        textTransform:"uppercase", letterSpacing:"0.05em" }}>{title}</div>
-      <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
-        <span style={{ fontSize:22, fontWeight:500, color:valueColor }}>{value}</span>
-        {badge}
-      </div>
-      <div style={{ fontSize:12, color:C.text2, lineHeight:1.6 }}>{body}</div>
+    <div style={{ background: "#fff", border: `0.5px solid ${C.border}`, borderRadius: 10,
+      padding: "16px 20px", marginBottom: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10,
+        paddingBottom: 8, borderBottom: `0.5px solid ${C.border}` }}>{title}</div>
+      {children}
     </div>
   );
 }
-
-const INIT_TRACKER_ROWS: {
-  title: string; switchDate: string;
-  body: (iv: { old: CohortMetrics; new: CohortMetrics } | undefined) => React.ReactNode;
-  verdictColor: string; verdict: string; action: string; actionDetail: string;
-}[] = [
-  {
-    title: "01 · Form fill", switchDate: "Switch: May 19",
-    body: (iv) => <>
-      Before: email-only, inbound AE. {iv ? pct(iv.old.meetingRate) : "16.5%"} meeting rate. {iv ? pct(iv.old.clNoMeetingRate) : "86%"} CL without speaking to anyone.<br/>
-      After: SDR outbound + email within 5 hours. {iv ? pct(iv.new.meetingRate) : "27.1%"} meeting rate. {iv ? pct(iv.new.clNoMeetingRate) : "26%"} CL without meeting.<br/>
-      <b>−{iv ? (iv.old.clNoMeetingRate - iv.new.clNoMeetingRate).toFixed(0) : "60"}pp on close lost without a conversation.</b>{" "}
-      On ~{iv ? n(iv.old.enrolled) : "196"} enrolled/month,{" "}
-      +{iv ? (iv.new.meetingRate - iv.old.meetingRate).toFixed(1) : "10.6"}pp = ~{iv ? Math.round((iv.new.meetingRate - iv.old.meetingRate)/100 * (iv.old.enrolled||196)) : "21"} additional conversations
-      → ~{iv ? Math.round((iv.new.meetingRate - iv.old.meetingRate)/100 * (iv.old.enrolled||196) * 0.43) : "9"} more deals in billing → ~2.8 additional clients projected.
-    </>,
-    verdictColor: "green", verdict: "Signal confirmed",
-    action: "Hold", actionDetail: "revenue read Jul 1. No changes to SDR motion before then.",
-  },
-  {
-    title: "02 · Missed zoom", switchDate: "Switch: May 28",
-    body: () => <>
-      Before: 68% of no-shows CL. 4.4% rebooked. 196 open with no active recovery.<br/>
-      After: SDR calling within hours of no-show. 4 days live — no comparable data yet.<br/>
-      Opportunity: <b>196 open deals per month the old process never recovered.</b>
-    </>,
-    verdictColor: "amber", verdict: "4 days old",
-    action: "Monitor", actionDetail: "4 days live. First data point Jun 10.",
-  },
-  {
-    title: "03 · TZ rebook", switchDate: "Switch: Apr 8",
-    body: () => <>
-      Before: passive email advising lead to rebook. No follow-up calls.<br/>
-      After: SDR outbound via &quot;Rebook TZ&quot; task queue. 54 days live.<br/>
-      Approaching 42-day read window. Old motion baseline (Feb–Apr) being compiled now.
-    </>,
-    verdictColor: "amber", verdict: "Approaching",
-    action: "Prepare read", actionDetail: "pull old motion baseline before Jun 15.",
-  },
-  {
-    title: "04 · 48hr tasks", switchDate: "Switch: May 12",
-    body: () => <>
-      Before: no automated follow-up when deals stalled. 37% of billing deals never opened a job. 22% in recruiting CL.<br/>
-      After: 48-hour task reminder on no response. 21 days live.<br/>
-      Metric to watch: billing → recruiting conversion rate. Read Jun 23.
-    </>,
-    verdictColor: "amber", verdict: "21 days old",
-    action: "Monitor", actionDetail: "check billing CL rate week over week. Read Jun 23.",
-  },
-  {
-    title: "05 · Pre-meeting email", switchDate: "Not yet live",
-    body: () => <>
-      Current state: generic post-booking confirmation. Show rate ~59% (proxy). 41% of booked calls don&apos;t happen.<br/>
-      Planned: branded video + FAQs + trust content sent immediately after booking.<br/>
-      Baseline locked. Launch date TBD.
-    </>,
-    verdictColor: "grey", verdict: "Baseline set",
-    action: "Decision needed", actionDetail: "confirm launch date with Kate.",
-  },
-];
