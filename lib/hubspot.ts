@@ -99,9 +99,59 @@ function exclusionFilter(): Filter[] {
   return [{ propertyName: "associations.contact", operator: "NOT_IN", values: EXCLUDED_CONTACT_IDS }];
 }
 
-// ── Fetch 1: Default pipeline deals by createdate ──────────────────────────────
-// Main deal set. Handles calls booked, no-shows, billing entered, cohort analysis,
-// missed zoom & billing breakdowns, post-billing sub-stages.
+// ── Fetch 1a: Calls Booked — exact Query 1 ────────────────────────────────────
+// stage date IN month, pipeline=default, HAS_PROPERTY appointmentscheduled
+// Confirmed May 2026 total = 1,875.
+
+export async function fetchCallsBookedDeals(token: string): Promise<Deal[]> {
+  const byId = new Map<string, Deal>();
+  for (const m of monthsSince("2026-01")) {
+    const { from, to } = monthRange(m);
+    const fg: FilterGroup[] = [{
+      filters: [
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, operator: "GTE", value: from },
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`, operator: "LTE", value: to },
+        { propertyName: "pipeline", operator: "EQ", value: "default" },
+        { propertyName: "hs_v2_date_entered_appointmentscheduled", operator: "HAS_PROPERTY" },
+        ...exclusionFilter(),
+      ],
+    }];
+    const batch = await searchDeals(token, fg, `calls_booked_${m}`);
+    for (const d of batch) byId.set(d.id, d);
+    console.log(`[hs] calls_booked ${m}: ${batch.length} → total ${byId.size}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+  return Array.from(byId.values());
+}
+
+// ── Fetch 1b: No-shows — exact Query 2 ────────────────────────────────────────
+// stage date IN month, pipeline=default, HAS_PROPERTY appointmentscheduled
+// Confirmed May 2026 total = 701. Attended = 1,875 − 701 = 1,174.
+
+export async function fetchNoShowDeals(token: string): Promise<Deal[]> {
+  const byId = new Map<string, Deal>();
+  for (const m of monthsSince("2026-01")) {
+    const { from, to } = monthRange(m);
+    const fg: FilterGroup[] = [{
+      filters: [
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`, operator: "GTE", value: from },
+        { propertyName: `hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`, operator: "LTE", value: to },
+        { propertyName: "pipeline", operator: "EQ", value: "default" },
+        { propertyName: "hs_v2_date_entered_appointmentscheduled", operator: "HAS_PROPERTY" },
+        ...exclusionFilter(),
+      ],
+    }];
+    const batch = await searchDeals(token, fg, `no_shows_${m}`);
+    for (const d of batch) byId.set(d.id, d);
+    console.log(`[hs] no_shows ${m}: ${batch.length} → total ${byId.size}`);
+    await sleep(PAGE_DELAY_MS);
+  }
+  return Array.from(byId.values());
+}
+
+// ── Fetch 2: Default pipeline deals by createdate ──────────────────────────────
+// Handles: billing entered, cohort analysis, billing breakdown, post-billing sub-stages.
+// callsBooked and noShows now have their own dedicated fetches above.
 
 export async function fetchDefaultPipelineDeals(token: string): Promise<Deal[]> {
   const byId = new Map<string, Deal>();
@@ -172,12 +222,11 @@ export async function fetchClosedLostDeals(token: string): Promise<Deal[]> {
   return Array.from(byId.values());
 }
 
-// ── Fetch 4: Post-billing deals — OR across all 4 stages, one request per month ──
-// Uses multiple filterGroups (OR logic) so HubSpot returns UNIQUE deals that entered
-// ANY of the 4 post-billing stages in that month. Summing separate stage queries
-// would double-count deals that moved through more than one stage in the same month.
-// pipeline=default prevents non-sales-funnel deals from leaking into wonPool.
-// Confirmed correct count for May 2026: 481 unique deals.
+// ── Fetch 4: Post-billing deals — exact Query 3 ───────────────────────────────
+// One request per month, 4 filterGroups (OR logic). HubSpot returns unique deals
+// that entered ANY of the 4 post-billing stages in that month.
+// pipeline=default + HAS_PROPERTY appointmentscheduled match Query 3 exactly.
+// Confirmed May 2026 total = 481 unique deals.
 
 export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
   const stageIds = [
@@ -192,12 +241,13 @@ export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
   for (const m of monthsSince("2026-01")) {
     const { from, to } = monthRange(m);
     // One filterGroup per stage — HubSpot ORs across filterGroups, ANDs within each.
-    // Result set is unique deals matching any stage's date range in this month.
+    // HAS_PROPERTY appointmentscheduled added to each group (matches Query 3 exactly).
     const fg: FilterGroup[] = stageIds.map((stageId) => ({
       filters: [
         { propertyName: `hs_v2_date_entered_${stageId}`, operator: "GTE", value: from },
         { propertyName: `hs_v2_date_entered_${stageId}`, operator: "LTE", value: to },
         { propertyName: "pipeline", operator: "EQ", value: "default" },
+        { propertyName: "hs_v2_date_entered_appointmentscheduled", operator: "HAS_PROPERTY" },
         ...exclusionFilter(),
       ],
     }));

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import {
+  fetchCallsBookedDeals,
+  fetchNoShowDeals,
   fetchDefaultPipelineDeals,
   fetchParkingLotDeals,
   fetchClosedLostDeals,
@@ -20,48 +22,50 @@ export async function POST() {
   }
 
   try {
-    console.log("[refresh] ── Starting 5-query fetch ─────────────────────────");
+    console.log("[refresh] ── Starting 7-query fetch ─────────────────────────");
 
-    // ── 1. Default pipeline by createdate ─────────────────────────────────────
-    // Handles: calls booked, no-shows, billing, missed zoom, billing breakdowns, cohort
+    // ── 1a. Calls Booked — Query 1: zoom stage date, pipeline=default, HAS_PROPERTY appt
+    const callsBookedDeals = await fetchCallsBookedDeals(token);
+    console.log(`[refresh] callsBookedDeals: ${callsBookedDeals.length}`);
+
+    // ── 1b. No-shows — Query 2: missed zoom stage date, pipeline=default, HAS_PROPERTY appt
+    const noShowDeals = await fetchNoShowDeals(token);
+    console.log(`[refresh] noShowDeals: ${noShowDeals.length}`);
+
+    // ── 2. Default pipeline by createdate — billing, sub-stages, cohort ───────
     const defaultDeals = await fetchDefaultPipelineDeals(token);
     console.log(`[refresh] defaultDeals: ${defaultDeals.length}`);
 
-    // ── 2. Parking Lot by stage-entry date (no pipeline/createdate filter) ────
-    // FIX 1: Captures pre-2026 deals that entered parking lot in 2026
+    // ── 3. Parking Lot by stage-entry date (no pipeline filter) ───────────────
     const parkingLotDeals = await fetchParkingLotDeals(token);
     console.log(`[refresh] parkingLotDeals: ${parkingLotDeals.length}`);
 
-    // ── 3. Closed Lost by stage-entry date, pipeline=default at API level ─────
-    // FIX 3: pipeline filter applied in the HubSpot query, not in-memory
+    // ── 4. Closed Lost — CL stage date, pipeline=default, HAS_PROPERTY appt ──
     const closedLostDeals = await fetchClosedLostDeals(token);
     console.log(`[refresh] closedLostDeals: ${closedLostDeals.length}`);
 
-    // ── 4. Post-billing by each stage-entry date (no createdate filter) ───────
-    // FIX 4: Captures pre-2026 deals that entered recruiting/etc. in 2026
+    // ── 5. Post-billing — Query 3: OR across 4 stages, pipeline=default, HAS_PROPERTY appt
     const postBillingDeals = await fetchPostBillingDeals(token);
     console.log(`[refresh] postBillingDeals: ${postBillingDeals.length}`);
 
-    // ── 5. Active Client ALL pipelines by stage-entry date ────────────────────
-    // FIX 2: Logged at HubSpot level; counted separately from all other metrics
+    // ── 6. Active Client — AC stage date, all pipelines, HAS_PROPERTY appt ───
     const acDeals = await fetchActiveClientDeals(token);
     console.log(`[refresh] acDeals: ${acDeals.length}`);
 
-    // ── wonPool: merges defaultDeals + postBillingDeals for Closed Won count ──
-    // Pre-2026 deals in postBillingDeals are added; existing IDs from defaultDeals win
-    const wonPool = mergeDeals(defaultDeals, postBillingDeals);
-    console.log(`[refresh] wonPool (default + post-billing): ${wonPool.length}`);
-
-    // ── Compute monthly metrics using dedicated per-metric deal sets ──────────
+    // ── Compute monthly metrics using exact per-metric deal sets ──────────────
     const byMonth = computeAllMonths(
-      defaultDeals, parkingLotDeals, closedLostDeals, postBillingDeals, acDeals, wonPool
+      defaultDeals, callsBookedDeals, noShowDeals,
+      parkingLotDeals, closedLostDeals, postBillingDeals, acDeals
     );
 
     // ── Initiatives use defaultDeals (sales funnel only) ─────────────────────
     const initiatives = computeInitiatives(defaultDeals);
 
     // ── All deals for cache storage ───────────────────────────────────────────
-    const allDeals = mergeDeals(defaultDeals, parkingLotDeals, closedLostDeals, postBillingDeals, acDeals);
+    const allDeals = mergeDeals(
+      callsBookedDeals, noShowDeals, defaultDeals,
+      parkingLotDeals, closedLostDeals, postBillingDeals, acDeals
+    );
     console.log(`[refresh] allDeals (merged for cache): ${allDeals.length}`);
 
     const cache: CacheData = {
@@ -97,12 +101,13 @@ export async function POST() {
       success: true,
       timestamp: cache.lastRefreshed,
       counts: {
+        callsBookedDeals: callsBookedDeals.length,
+        noShowDeals: noShowDeals.length,
         defaultDeals: defaultDeals.length,
         parkingLotDeals: parkingLotDeals.length,
         closedLostDeals: closedLostDeals.length,
         postBillingDeals: postBillingDeals.length,
         acDeals: acDeals.length,
-        wonPool: wonPool.length,
         allDeals: allDeals.length,
       },
       validation: may ?? null,
