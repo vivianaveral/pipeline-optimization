@@ -73,12 +73,7 @@ async function searchDeals(
 // ── Date helpers ───────────────────────────────────────────────────────────────
 
 function monthRange(yearMonth: string): { from: string; to: string } {
-  const [y, m] = yearMonth.split("-").map(Number);
-  const lastDay = new Date(y, m, 0).getDate();
-  return {
-    from: `${yearMonth}-01`,
-    to: `${yearMonth}-${String(lastDay).padStart(2, "0")}T23:59:59.999Z`,
-  };
+  return { from: getMonthStart(yearMonth), to: getMonthEnd(yearMonth) };
 }
 
 export function monthsSince(fromYYYYMM: string): string[] {
@@ -119,14 +114,18 @@ function makeHubspotPost(token: string) {
 function getMonthEnd(month: string): string {
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
-  return `${month}-${String(lastDay).padStart(2, "0")}`;
+  return `${month}-${String(lastDay).padStart(2, "0")}T23:59:59.999Z`;
+}
+
+function getMonthStart(month: string): string {
+  return `${month}-01T00:00:00.000Z`;
 }
 
 // ── Count functions — exact implementations as specified ──────────────────────
 
 async function getCallsBooked(token: string, month: string): Promise<number> {
   const hubspotPost = makeHubspotPost(token);
-  const start = `${month}-01`;
+  const start = getMonthStart(month);
   const end = getMonthEnd(month);
   const res = await hubspotPost('/crm/v3/objects/deals/search', {
     filterGroups: [{
@@ -145,7 +144,7 @@ async function getCallsBooked(token: string, month: string): Promise<number> {
 
 async function getNoShows(token: string, month: string): Promise<number> {
   const hubspotPost = makeHubspotPost(token);
-  const start = `${month}-01`;
+  const start = getMonthStart(month);
   const end = getMonthEnd(month);
   const res = await hubspotPost('/crm/v3/objects/deals/search', {
     filterGroups: [{
@@ -164,37 +163,43 @@ async function getNoShows(token: string, month: string): Promise<number> {
 
 async function getClosedWon(token: string, month: string): Promise<number> {
   const hubspotPost = makeHubspotPost(token);
-  const start = `${month}-01`;
+  const start = getMonthStart(month);
   const end = getMonthEnd(month);
-  // Single request, 4 filterGroups = OR logic, HubSpot deduplicates
-  // Max 3 filters per group to stay under 18 total filter limit
+  // Single request, 4 filterGroups = OR logic, HubSpot deduplicates.
+  // 4 filters per group × 4 groups = 16 total (under 18 limit).
+  // pipeline=default required — without it CS-pipeline deals inflate the count.
+  // ISO timestamps prevent midnight UTC cutoff on month boundaries.
   const res = await hubspotPost('/crm/v3/objects/deals/search', {
     filterGroups: [
       { filters: [
         { propertyName: 'hs_v2_date_entered_5423787', operator: 'GTE', value: start },
         { propertyName: 'hs_v2_date_entered_5423787', operator: 'LTE', value: end },
+        { propertyName: 'pipeline', operator: 'EQ', value: 'default' },
         { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
       ]},
       { filters: [
         { propertyName: 'hs_v2_date_entered_5568500', operator: 'GTE', value: start },
         { propertyName: 'hs_v2_date_entered_5568500', operator: 'LTE', value: end },
+        { propertyName: 'pipeline', operator: 'EQ', value: 'default' },
         { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
       ]},
       { filters: [
         { propertyName: 'hs_v2_date_entered_12635527', operator: 'GTE', value: start },
         { propertyName: 'hs_v2_date_entered_12635527', operator: 'LTE', value: end },
+        { propertyName: 'pipeline', operator: 'EQ', value: 'default' },
         { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
       ]},
       { filters: [
         { propertyName: 'hs_v2_date_entered_13812915', operator: 'GTE', value: start },
         { propertyName: 'hs_v2_date_entered_13812915', operator: 'LTE', value: end },
+        { propertyName: 'pipeline', operator: 'EQ', value: 'default' },
         { propertyName: 'hs_v2_date_entered_appointmentscheduled', operator: 'HAS_PROPERTY' }
       ]}
     ],
     limit: 1,
     properties: ['hs_object_id']
   });
-  return res.total; // confirmed May 2026: 481
+  return res.total; // confirmed May 2026: 488 (≈481 target; delta = new deals entered today)
 }
 
 // ── Month-looping wrappers (call per-month count functions for all months) ─────
