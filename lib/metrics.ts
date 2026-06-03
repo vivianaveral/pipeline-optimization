@@ -85,13 +85,15 @@ export function computeMonthlyMetrics(
   for (const deal of defaultDeals) {
     const p = deal.properties;
 
-    // Belt-and-suspenders: only count calls booked / no-shows for default-pipeline deals.
-    // defaultDeals is already queried with pipeline=default, but guard here too so any
-    // future merge changes cannot silently inflate attended.
+    // Belt-and-suspenders pipeline guard.
     const isDefaultPipeline = p.pipeline === "default";
+    // Valid-lead filter: must have passed through the Lead (appointmentscheduled) stage.
+    // Applied to both callsBooked AND noShows so the subtraction (attended) is consistent.
+    // Confirmed correct counts from HubSpot: zoom booked 1,875 / no-shows 701 / attended 1,174.
+    const hasApptScheduled = !!p.hs_v2_date_entered_appointmentscheduled;
 
-    if (isDefaultPipeline && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`], monthKey)) callsBooked++;
-    if (isDefaultPipeline && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], monthKey)) noShows++;
+    if (isDefaultPipeline && hasApptScheduled && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`], monthKey)) callsBooked++;
+    if (isDefaultPipeline && hasApptScheduled && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], monthKey)) noShows++;
     if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], monthKey)) billingEntered++;
 
     if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.RECRUITING}`], monthKey)) recruiting++;
@@ -100,7 +102,7 @@ export function computeMonthlyMetrics(
     if (inMonth(p[`hs_v2_date_entered_${STAGE_IDS.AGREEMENT_SENT}`], monthKey)) agreementSent++;
 
     // Missed Zoom breakdown
-    if (isDefaultPipeline && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], monthKey)) {
+    if (isDefaultPipeline && hasApptScheduled && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`], monthKey)) {
       const missedTs = ts(p[`hs_v2_date_entered_${STAGE_IDS.MISSED_ZOOM_CALL}`]);
       const zoomTs = ts(p[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`]);
       const rebooked = missedTs !== null && zoomTs !== null && zoomTs > missedTs;
@@ -111,7 +113,7 @@ export function computeMonthlyMetrics(
     }
 
     // Billing breakdown
-    if (isDefaultPipeline && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], monthKey)) {
+    if (isDefaultPipeline && hasApptScheduled && inMonth(p[`hs_v2_date_entered_${STAGE_IDS.GETTING_BILLING}`], monthKey)) {
       const hasCL = !!p[`hs_v2_date_entered_${STAGE_IDS.CLOSED_LOST}`];
       const progressed = earliestPostBillingTs(deal) !== null;
       if (progressed) billing_progressed++;

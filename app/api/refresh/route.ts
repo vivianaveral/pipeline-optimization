@@ -80,16 +80,16 @@ export async function POST() {
     const may = byMonth["2026-05"];
     if (may) {
       console.log("[refresh] ── MAY 2026 VALIDATION ──────────────────────────");
-      console.log(`Calls booked:    ${may.callsBooked}   (target ~1,881)`);
-      console.log(`No-shows:        ${may.noShows}   (target ~722)`);
-      console.log(`Attended:        ${may.attended}   (target ~1,159)`);
-      console.log(`Billing entered: ${may.billingEntered}   (target ~766)`);
+      console.log(`Calls booked:    ${may.callsBooked}   (target ~1,875)`);
+      console.log(`No-shows:        ${may.noShows}   (target ~701)`);
+      console.log(`Attended:        ${may.attended}   (target ~1,174)`);
+      console.log(`Billing entered: ${may.billingEntered}   (target ~798)`);
       console.log(`Parking Lot:     ${may.parkingLot}   (target ~49)`);
-      console.log(`Drop-offs:       ${may.dropOffs}   (target ~344)`);
-      console.log(`Drop rate:       ${may.dropRate}%   (target ~29.7%)`);
-      console.log(`Closed Won:      ${may.closedWon}   (target ~489)`);
-      console.log(`Active Client:   ${may.activeClient}   (target ~180)`);
-      console.log(`Closed Lost:     ${may.closedLost}   (target ~2,171)`);
+      console.log(`Drop-offs:       ${may.dropOffs}   (target ~327)`);
+      console.log(`Drop rate:       ${may.dropRate}%   (target ~27.9%)`);
+      console.log(`Closed Won:      ${may.closedWon}   (target ~481)`);
+      console.log(`Active Client:   ${may.activeClient}   (target ~181)`);
+      console.log(`Closed Lost:     ${may.closedLost}   (target ~2,202)`);
       console.log("[refresh] ────────────────────────────────────────────────");
     }
 

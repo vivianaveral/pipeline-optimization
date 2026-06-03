@@ -172,36 +172,38 @@ export async function fetchClosedLostDeals(token: string): Promise<Deal[]> {
   return Array.from(byId.values());
 }
 
-// ── Fetch 4: Post-billing deals — by each stage-entry date, pipeline=default ─────
-// FIX 4: Captures deals created BEFORE 2026 that advanced to post-billing in 2026.
-// pipeline=default added to prevent non-sales-funnel deals from leaking into wonPool
-// and inflating Closed Won. Queries each of the 4 post-billing stages separately.
+// ── Fetch 4: Post-billing deals — OR across all 4 stages, one request per month ──
+// Uses multiple filterGroups (OR logic) so HubSpot returns UNIQUE deals that entered
+// ANY of the 4 post-billing stages in that month. Summing separate stage queries
+// would double-count deals that moved through more than one stage in the same month.
+// pipeline=default prevents non-sales-funnel deals from leaking into wonPool.
+// Confirmed correct count for May 2026: 481 unique deals.
 
 export async function fetchPostBillingDeals(token: string): Promise<Deal[]> {
-  const stages = [
-    { id: STAGE_IDS.RECRUITING,    name: "recruiting"    },
-    { id: STAGE_IDS.RESUMES_SENT,  name: "resumes_sent"  },
-    { id: STAGE_IDS.INTERVIEW_SCHED, name: "interview_sched" },
-    { id: STAGE_IDS.AGREEMENT_SENT, name: "agreement_sent" },
+  const stageIds = [
+    STAGE_IDS.RECRUITING,
+    STAGE_IDS.RESUMES_SENT,
+    STAGE_IDS.INTERVIEW_SCHED,
+    STAGE_IDS.AGREEMENT_SENT,
   ];
 
   const byId = new Map<string, Deal>();
 
-  for (const stage of stages) {
-    for (const m of monthsSince("2026-01")) {
-      const { from, to } = monthRange(m);
-      const fg: FilterGroup[] = [{
-        filters: [
-          { propertyName: `hs_v2_date_entered_${stage.id}`, operator: "GTE", value: from },
-          { propertyName: `hs_v2_date_entered_${stage.id}`, operator: "LTE", value: to },
-          { propertyName: "pipeline", operator: "EQ", value: "default" }, // prevent non-sales-funnel deals inflating Closed Won
-          ...exclusionFilter(),
-        ],
-      }];
-      const batch = await searchDeals(token, fg, `post_billing_${stage.name}_${m}`);
-      for (const d of batch) byId.set(d.id, d);
-    }
-    console.log(`[hs] post_billing ${stage.name}: total so far ${byId.size}`);
+  for (const m of monthsSince("2026-01")) {
+    const { from, to } = monthRange(m);
+    // One filterGroup per stage — HubSpot ORs across filterGroups, ANDs within each.
+    // Result set is unique deals matching any stage's date range in this month.
+    const fg: FilterGroup[] = stageIds.map((stageId) => ({
+      filters: [
+        { propertyName: `hs_v2_date_entered_${stageId}`, operator: "GTE", value: from },
+        { propertyName: `hs_v2_date_entered_${stageId}`, operator: "LTE", value: to },
+        { propertyName: "pipeline", operator: "EQ", value: "default" },
+        ...exclusionFilter(),
+      ],
+    }));
+    const batch = await searchDeals(token, fg, `post_billing_or4_${m}`);
+    for (const d of batch) byId.set(d.id, d);
+    console.log(`[hs] post_billing ${m}: ${batch.length} unique → total ${byId.size}`);
     await sleep(PAGE_DELAY_MS);
   }
 
