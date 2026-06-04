@@ -229,9 +229,16 @@ function filterByDatePropGTE(deals: Deal[], prop: string, fromMs: number): Deal[
 }
 
 function aggregateInit01Cohort(deals: Deal[]): CohortMetrics {
-  const enrolled = deals.length;
+  const formFillOnly = deals.filter(d => {
+    const enrolledTs = d.properties[`hs_v2_date_entered_${STAGE_IDS.ENROLLED_IN_SEQ}`];
+    const zoomTs     = d.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`];
+    if (!enrolledTs) return false;
+    if (!zoomTs) return true;
+    return new Date(zoomTs) > new Date(enrolledTs);
+  });
+  const enrolled = formFillOnly.length;
   let meetings = 0, pipeline = 0, active = 0, clNoMeeting = 0;
-  for (const d of deals) {
+  for (const d of formFillOnly) {
     const hasZoom = !!d.properties[`hs_v2_date_entered_${STAGE_IDS.ZOOM_CALL_BOOKED}`];
     const hasPipeline = earliestPostBillingTs(d) !== null;
     const hasActive = !!d.properties[`hs_v2_date_entered_${STAGE_IDS.ACTIVE_CLIENT}`];
